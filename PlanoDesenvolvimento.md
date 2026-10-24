@@ -89,27 +89,15 @@ A tabela `sessions` do servidor guarda um `StreamWriter` — essa é a classe da
 - [x] Tratamento de erro: conexão cai no meio de um frame → `IncompleteReadError` → log limpo e encerramento da task, **sem traceback feio e sem derrubar as outras conexões**.
 - [x] Definir um limite máximo de frame aceito (sugestão: ~4,2 KB — ver Etapa 6) e rejeitar prefixos maiores como erro de protocolo (isso mata ataques de "length prefix gigante" que estourariam memória).
 
-**Critério de concluído:**
-- [ ] Dois terminais (servidor + cliente) trocam frames nos dois sentidos sem corrupção, incluindo o de ~4000 bytes.
-- [ ] Matar o cliente com Ctrl+C fecha a conexão sem crash do servidor; abrir 3 clientes simultâneos não confunde os fluxos.
-
-> [!warning] Armadilhas
-> 1. **Nunca** use `\n` ou outro caractere como delimitador (o conteúdo cifrado é binário e pode conter qualquer byte).
-> 2. **Nunca** assuma que uma única leitura devolve o frame inteiro — é exatamente por isso que existe `readexactly`/loop.
-> 3. Big-endian nos 4 bytes **e** em todo campo numérico do protocolo (`seq_no` etc.). Escolha uma abordagem (`struct`) e use a mesma nos dois lados.
-
 ---
 
 ### Etapa 2 — Identidade: `client_id` UUID v4
 
 > [!summary] Ficha rápida
 > **Objetivo:** cada cliente com identidade única de 16 bytes, pronta para trafegar binária e para log textual.
-> **Tempo estimado:** ~1 h · **Depende de:** Etapa 1
 
-**O que você está construindo e por quê.** O TP define `client_id` como **UUID v4 binário de 16 bytes** (network byte order). UUID v4 é um identificador gerado a partir de ~122 bits aleatórios — a chance de dois clientes gerarem o mesmo é desprezível, o que elimina a necessidade de um "central de nomes". Na rede ele trafega como 16 bytes crus (barato e de tamanho fixo); para debug você usa a representação textual com hífens **fora** do protocolo (logs, tela). Essa dualidade binário-no-wire/texto-no-log vai se repetir em tudo: chaves, salt, nonce.
+**O que você está construindo e por quê.** O TP define `client_id` como **UUID v4 binário de 16 bytes** (network byte order). UUID v4 é um identificador gerado a partir de ~122 bits aleatórios — a chance de dois clientes gerarem o mesmo é desprezível, o que elimina a necessidade de um "central de nomes". 
 
-**O que estudar antes:**
-- Docs oficiais do módulo `uuid` (foco em `uuid4()` e no atributo `.bytes`).
 
 **Tarefas:**
 - [ ] No boot do cliente, gerar `client_id` uma única vez por processo (conexões subsequentes do mesmo processo reutilizam o id — e na reconexão o handshake será refeito, ver Etapa 8).
