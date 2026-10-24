@@ -71,25 +71,20 @@ Você já estudou **tudo** que o TP usa — o projeto é a "montagem". Esta tabe
 
 ---
 
-### Etapa 1 — Rede: TCP + framing (a fundação)
+### Etapa 1 — Rede: TCP + framing
 
 > [!summary] Ficha rápida
 > **Objetivo:** servidor que aceita várias conexões simultâneas + cliente, trocando **frames** com prefixo de comprimento — ainda sem criptografia.
-> **Tempo estimado:** ~5 h · **Depende de:** Etapa 0 · **Aulas que sustentam:** nenhuma ainda — é a base de sistemas distribuídos.
 
-**O que você está construindo e por quê.** TCP é um **fluxo de bytes**, não uma fila de mensagens: se você enviar dois frames de 20 bytes, o recebedor pode receber 13 bytes, depois 27 — e o TCP acha isso ótimo. Como todos os frames do TP (handshake, E2E, administrativos) têm tamanhos variáveis, você precisa de **framing**: cada frame é precedido por **4 bytes em big-endian** (network byte order) indicando o tamanho do payload que vem em seguida. O recebedor lê os 4 bytes, sabe quantos bytes faltam e lê exatamente esse tanto, em loop, até completar. O enunciado exige isso explicitamente, e a rubrica testa: *framing inválido → desconexão segura*.
+**O que você está construindo e por quê.** TCP é um **fluxo de bytes**. Como todos os frames do trabalho (handshake, E2E, administrativos) têm tamanhos variáveis, você precisa de **framing**: cada frame é precedido por **4 bytes em big-endian** (network byte order) indicando o tamanho do payload que vem em seguida. 
+- framing inválido → desconexão segura.
 
-Para concorrência, o PDF do professor entrega a resposta: a tabela `sessions` do servidor guarda um `StreamWriter` — essa é a classe da **`asyncio`** (biblioteca padrão). Use `asyncio` (com `start_server` e streams); `threading` também resolveria, mas você desviaria da estrutura de dados que o enunciado define e ganharia dores de cabeça com travas.
-
-**O que estudar antes:**
-- Docs oficiais do Python: `asyncio` → seção **Streams** (`start_server`, `StreamReader.readexactly`, `StreamWriter.write` + `drain`, `wait_closed`).
-- Conceito de *coroutine* / `async`/`await` — tutorial "Async IO in Python: A Complete Walkthrough" (Real Python), só as partes de conceito e streams.
-- Entender por que `readexactly(n)` é a ferramenta perfeita para framing (só retorna quando tiver os n bytes; levanta `IncompleteReadError` se a conexão morrer no meio).
+A tabela `sessions` do servidor guarda um `StreamWriter` — essa é a classe da **`asyncio`** (biblioteca padrão). Use `asyncio` (com `start_server` e streams); 
 
 **Tarefas:**
-- [ ] Servidor: aceitar N conexões simultâneas com `asyncio.start_server`; para cada conexão, gerar uma *task* de atendimento.
-- [ ] Implementar (dois lados, mesma lógica) `send_frame(payload)` e `recv_frame()`: prefixo de 4 bytes big-endian + payload — referências: `struct` com formato `>I` **ou** `int.to_bytes(length=4, byteorder="big")` / `int.from_bytes(..., "big")`; leitura com `readexactly`.
-- [ ] Cliente conecta, envia um payload de teste, servidor **ecoa** de volta (teste temporário — o eco some nas etapas seguintes).
+- [x] Servidor: aceitar N conexões simultâneas com `asyncio.start_server`; para cada conexão, gerar uma task de atendimento.
+- [x] Implementar (dois lados, mesma lógica) `send_frame(payload)` e `recv_frame()`: prefixo de 4 bytes big-endian + payload — referências: `struct` com formato `>I`; leitura com `readexactly`.
+- [x] Cliente conecta, envia um payload de teste, servidor **ecoa** de volta (teste temporário — o eco some nas etapas seguintes).
 - [ ] Teste de estresse do framing: enviar um payload de ~4000 bytes e conferir que chega íntegro (tamanho e conteúdo) — é aqui que implementações ingênuas quebram.
 - [ ] Tratamento de erro: conexão cai no meio de um frame → `IncompleteReadError` → log limpo e encerramento da task, **sem traceback feio e sem derrubar as outras conexões**.
 - [ ] Definir um limite máximo de frame aceito (sugestão: ~4,2 KB — ver Etapa 6) e rejeitar prefixos maiores como erro de protocolo (isso mata ataques de "length prefix gigante" que estourariam memória).
@@ -101,7 +96,7 @@ Para concorrência, o PDF do professor entrega a resposta: a tabela `sessions` d
 > [!warning] Armadilhas
 > 1. **Nunca** use `\n` ou outro caractere como delimitador (o conteúdo cifrado é binário e pode conter qualquer byte).
 > 2. **Nunca** assuma que uma única leitura devolve o frame inteiro — é exatamente por isso que existe `readexactly`/loop.
-> 3. Big-endian nos 4 bytes **e** em todo campo numérico do protocolo (`seq_no` etc.). Escolha uma abordagem (`struct` ou `to_bytes`) e use a mesma nos dois lados.
+> 3. Big-endian nos 4 bytes **e** em todo campo numérico do protocolo (`seq_no` etc.). Escolha uma abordagem (`struct`) e use a mesma nos dois lados.
 
 ---
 
