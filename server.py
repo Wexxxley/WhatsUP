@@ -12,11 +12,12 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             # Recebe o frame do cliente utilizando o leitor de stream
             payload = await recv_frame(reader)
             print(f"Recebido payload de {len(payload)} bytes")
-            print(payload.decode('utf-8'))
             # Devolve o mesmo payload recebido para o cliente (eco)
             await send_frame(writer, payload)
     except asyncio.IncompleteReadError:
         print("Conexão fechada pelo cliente.")
+    except ValueError as e: # Payloads que excedem o limite
+        print(f"Erro de protocolo: {e}")
     finally:
         # Garante o fechamento seguro dos recursos de rede ao finalizar a sessão
         writer.close()

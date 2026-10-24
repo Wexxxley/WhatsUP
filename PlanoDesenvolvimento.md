@@ -85,9 +85,9 @@ A tabela `sessions` do servidor guarda um `StreamWriter` — essa é a classe da
 - [x] Servidor: aceitar N conexões simultâneas com `asyncio.start_server`; para cada conexão, gerar uma task de atendimento.
 - [x] Implementar (dois lados, mesma lógica) `send_frame(payload)` e `recv_frame()`: prefixo de 4 bytes big-endian + payload — referências: `struct` com formato `>I`; leitura com `readexactly`.
 - [x] Cliente conecta, envia um payload de teste, servidor **ecoa** de volta (teste temporário — o eco some nas etapas seguintes).
-- [ ] Teste de estresse do framing: enviar um payload de ~4000 bytes e conferir que chega íntegro (tamanho e conteúdo) — é aqui que implementações ingênuas quebram.
-- [ ] Tratamento de erro: conexão cai no meio de um frame → `IncompleteReadError` → log limpo e encerramento da task, **sem traceback feio e sem derrubar as outras conexões**.
-- [ ] Definir um limite máximo de frame aceito (sugestão: ~4,2 KB — ver Etapa 6) e rejeitar prefixos maiores como erro de protocolo (isso mata ataques de "length prefix gigante" que estourariam memória).
+- [x] Teste de estresse do framing: enviar um payload de ~4000 bytes e conferir que chega íntegro (tamanho e conteúdo) — é aqui que implementações ingênuas quebram.
+- [x] Tratamento de erro: conexão cai no meio de um frame → `IncompleteReadError` → log limpo e encerramento da task, **sem traceback feio e sem derrubar as outras conexões**.
+- [x] Definir um limite máximo de frame aceito (sugestão: ~4,2 KB — ver Etapa 6) e rejeitar prefixos maiores como erro de protocolo (isso mata ataques de "length prefix gigante" que estourariam memória).
 
 **Critério de concluído:**
 - [ ] Dois terminais (servidor + cliente) trocam frames nos dois sentidos sem corrupção, incluindo o de ~4000 bytes.
