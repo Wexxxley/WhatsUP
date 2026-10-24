@@ -100,42 +100,30 @@ A tabela `sessions` do servidor guarda um `StreamWriter` — essa é a classe da
 
 
 **Tarefas:**
-- [ ] No boot do cliente, gerar `client_id` uma única vez por processo (conexões subsequentes do mesmo processo reutilizam o id — e na reconexão o handshake será refeito, ver Etapa 8).
-- [ ] Criar helpers de apresentação para logs: id de 16 bytes → string hex/textual (referência: `UUID(bytes=...)` e `.hex`).
-- [ ] Incluir o `client_id` no frame de registro que o cliente já envia ao servidor da Etapa 1 (substituindo o eco temporário por "recebi registro de X").
+- [x] No boot do cliente, gerar `client_id` uma única vez por processo (conexões subsequentes do mesmo processo reutilizam o id — e na reconexão o handshake será refeito, ver Etapa 8).
+- [x] Criar helpers de apresentação para logs: id de 16 bytes → string hex/textual (referência: `UUID(bytes=...)` e `.hex`).
+- [x] Incluir o `client_id` no frame de registro que o cliente já envia ao servidor da Etapa 1 (substituindo o eco temporário por "recebi registro de X").
 
 **Critério de concluído:**
-- [ ] Dois clientes em execução simultânea têm ids distintos; o log do servidor mostra ambos de forma legível e estável.
+- [x] Dois clientes em execução simultânea têm ids distintos; o log do servidor mostra ambos de forma legível e estável.
 
 ---
 ### Etapa 3 — Chaves X25519 e registro no servidor
 
 > [!summary] Ficha rápida
-> **Objetivo:** cada cliente gera seu par efêmero X25519 e se registra; o servidor mantém a tabela `sessions` com `client_id → pk`.
-> **Tempo estimado:** ~3 h · **Depende de:** Etapa 2 · **Aulas que sustentam:** [[7_Criptografia]] (assimétrica/ECC), [[9_Troca de chaves privadas]] (Diffie-Hellman)
+> **Objetivo:** cada cliente gera seu par X25519 e se registra; o servidor mantém a tabela `sessions` com `client_id → pk`.
 
-**O que você está construindo e por quê.** Aqui começa a criptografia de verdade — e ela é literalmente a Aula 9 trocando de matemática. No DH clássico das anotações, Alice envia `A = g^a mod p`; no X25519 (DH sobre curva elíptica), Alice envia `pk_A` de 32 bytes. A propriedade é a mesma: quem conhece só as chaves **públicas** não consegue calcular o segredo; quem conhece a própria chave **privada** + a pública do outro, consegue. Dois detalhes de nomenclatura do enunciado: o par é **efêmero** (gerado a cada execução/conexão — é o "E" de ECDHE, e é ele que compra o sigilo perfeito) e a chave pública trafega como **32 bytes crus** (o TP proíbe PEM/DER no wire, por simplicidade e interoperabilidade). `sk` nunca sai da memória do dono; `pk` é público e viaja feliz.
+**O que você está construindo e por quê.** Dois detalhes de nomenclatura do enunciado: o par é **efêmero** (gerado a cada execução/conexão — é o "E" de ECDHE, e é ele que compra o sigilo perfeito) e a chave pública trafega como **32 bytes crus** (o TP proíbe PEM/DER no wire, por simplicidade e interoperabilidade). `sk` nunca sai da memória do dono; `pk` é público.
 
-Nesta etapa o servidor só **registra** (ainda não autentica nada — isso é a Etapa 4). A tabela `sessions` nasce aqui com a forma do enunciado: `client_id → {writer, public_key, seq_send: 0, seq_recv: -1, salt}`.
-
-**O que estudar antes:**
-- Releia [[9_Troca de chaves privadas]] (a analogia das tintas É o ECDH) e a parte de ECC em [[7_Criptografia]].
-- Docs da `cryptography`: seção **X25519** (`X25519PrivateKey.generate()`, `.exchange()`, `X25519PublicKey.from_public_bytes()`).
-- RFC 7748 §1 (só a introdução, se quiser ver o formal).
+Nesta etapa o servidor só **registra** (ainda não autentica nada). A tabela `sessions` nasce aqui com a forma do enunciado: `client_id → {writer, public_key, seq_send: 0, seq_recv: -1, salt}`.
 
 **Tarefas:**
-- [ ] Cliente: no boot, gerar o par efêmero (`X25519PrivateKey.generate()`); serializar a pública com `Encoding.Raw` + `PublicFormat.Raw` (32 bytes) e manter a privada só em memória.
-- [ ] Frame de registro: `client_id` (16B) + `pk_C` (32B), já usando o framing da Etapa 1.
-- [ ] Servidor: registrar a entrada na tabela `sessions` (inicialize `seq_send = 0` e `seq_recv = -1` conforme o enunciado; `salt` fica vazio até o handshake da Etapa 4).
-- [ ] Log de registro usando **fingerprint** da chave: `SHA-256(pk_C)` truncado em ~8 bytes hexadecimais — referência: `cryptography.hazmat.primitives.hashes` → `Hash(SHA256())`. (Logar fingerprint é permitido pela política de logs e é seguro por causa da unidirecionalidade do hash — [[8_Função Hash e Mac]].)
-- [ ] Decisão de projeto → **Anexo B (D-estutura)**: registrar aqui que chaves são logadas só como fingerprint, nunca inteiras.
+- [X] Cliente: gerar o par efêmero (`X25519PrivateKey.generate()`); serializar a pública com `Encoding.Raw` + `PublicFormat.Raw` (32 bytes) e manter a privada só em memória.
+- [X] Frame de registro: `client_id` (16B) + `pk_C` (32B), já usando o framing da Etapa 1.
+- [X] Servidor: registrar a entrada na tabela `sessions` (inicialize `seq_send = 0` e `seq_recv = -1` conforme o enunciado; `salt` fica vazio até o handshake da Etapa 4).
+- [X] Log de registro usando **fingerprint** da chave: `SHA-256(pk_C)` truncado em ~8 bytes hexadecimais — referência: `cryptography.hazmat.primitives.hashes` → `Hash(SHA256())`. (Logar fingerprint é permitido pela política de logs e é seguro por causa da unidirecionalidade do hash — [[8_Função Hash e Mac]].)
+- [X] registrar aqui que chaves são logadas só como fingerprint, nunca inteiras.
 
-**Critério de concluído:**
-- [ ] Dois clientes conectam e o servidor exibe duas entradas em `sessions`, cada uma com id + fingerprint da chave.
-- [ ] Nenhum log imprime a chave privada ou a pública inteira.
-
-> [!tip] Para a apresentação
-> Guarde essa frase: *"X25519 é o Diffie-Hellman da Aula 9 implementado sobre curvas elípticas, com par gerado por sessão — por isso o sistema tem forward secrecy antes mesmo de cifrar a primeira mensagem."*
 
 ---
 
@@ -391,3 +379,19 @@ WhatsUp/
 ├── .gitignore              # server.key, venv, __pycache__
 └── README.md               # rodar + protocolo + decisões (Anexo B) + matriz de testes
 ```
+
+---
+
+# Anexo B: Decisões de Projeto
+
+- Chaves públicas e privadas:
+  - As chaves privadas (`sk`) permanecem apenas na memória do cliente e nunca saem dela.
+  - As chaves públicas (`pk`) são logadas no servidor apenas como o seu fingerprint (SHA-256 truncado em 8 bytes hex), nunca inteiras.
+- Regra de quem é "A" no ECDH:
+  - Para qualquer par, os `client_id` são ordenados como bytes. O menor id é "A", o maior é "B".
+- Servidor:
+  - As mensagens administrativas do servidor (plano de controle) são transmitidas sem cifragem, mas nunca contêm segredos.
+- Contadores:
+  - `seq_send` é incrementado *após* a cifragem. O primeiro frame usa seq 0.
+- Política de logs:
+  - Logs de erro em operações criptográficas (ex: `InvalidTag`) registram apenas a razão do erro, nunca os dados de contexto (dados, chaves, nonce).

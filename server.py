@@ -1,9 +1,18 @@
 import asyncio
+from typing import TypedDict
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 from protocol.framing import send_frame, recv_frame
 from protocol.ids import format_client_id
+from protocol.keys import deserialize_public_key
 
-# Dicionário para armazenar sessões ativas, mapeando client_id para o writer correspondente
-sessions: dict[str, asyncio.StreamWriter] = {}
+class SessionData(TypedDict):
+    writer: asyncio.StreamWriter
+    public_key: X25519PublicKey
+    seq_send: int
+    seq_recv: int
+    salt: bytes
+
+sessions: dict[str, SessionData] = {}
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     """Função assíncrona executada para cada cliente."""
@@ -12,14 +21,24 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     print(f"Nova conexão de {peername}")
 
     try:
-        # Primeiro frame deve ser o registro do client_id
-        client_id_bytes = await recv_frame(reader)
-        if len(client_id_bytes) != 16:
-            raise ValueError("ID de cliente inválido")
+        # Primeiro frame -> registro: client_id (16B) + pk (32B) = 48B
+        registration_frame = await recv_frame(reader)
+        if len(registration_frame) != 48:
+            raise ValueError("Frame de registro inválido")
+
+        client_id_bytes = registration_frame[:16]
+        pk_c_bytes = registration_frame[16:]
 
         client_id_str = format_client_id(client_id_bytes)
-        sessions[client_id_str] = writer
-        print(f"Cliente {client_id_str} registrado.")
+        pk_c = deserialize_public_key(pk_c_bytes)
+
+        sessions[client_id_str] = {
+            'writer': writer,
+            'public_key': pk_c,
+            'seq_send': 0,  # número sequencial da próxima mensagem que este cliente vai enviar.
+            'seq_recv': -1, # número sequencial da última mensagem válida que este cliente recebeu.
+            'salt': b''
+        }
 
         while True:
             # Recebe o frame do cliente utilizando o leitor de stream

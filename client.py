@@ -2,15 +2,21 @@ import asyncio
 import os
 from protocol.framing import send_frame, recv_frame
 from protocol.ids import generate_client_id, format_client_id
+from protocol.keys import generate_key_pair, serialize_public_key
 
 async def main():
     
     client_id = generate_client_id()
+    
+    # Geração das chaves
+    sk, pk = generate_key_pair()
+    pk_bytes = serialize_public_key(pk)
 
     (reader, writer) = await asyncio.open_connection('127.0.0.1', 8888)
 
-    # Frame de registro inicial: client_id (16 bytes)
-    await send_frame(writer, client_id)
+    # Frame de registro: client_id (16 bytes) + pk (32 bytes) = 48 bytes
+    registration_frame = client_id + pk_bytes
+    await send_frame(writer, registration_frame)
     print(f"Enviado ID de registro: {format_client_id(client_id)}")
 
     # 1. Teste normal
