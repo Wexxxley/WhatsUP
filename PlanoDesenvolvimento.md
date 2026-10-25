@@ -130,35 +130,32 @@ Nesta etapa o servidor só **registra** (ainda não autentica nada). A tabela `s
 ### Etapa 4 — Autenticação do servidor: RSA + certificado autoassinado + RSA-PSS
 
 > [!summary] Ficha rápida
-> **Objetivo:** handshake autenticado — o cliente tem prova criptográfica de que fala com O servidor (e não com um MITM), e de que o servidor registrou a chave dele exatamente como ele enviou.
-> **Tempo estimado:** ~6 h · **Depende de:** Etapa 3 · **Aulas que sustentam:** [[11_Assinatura e certificado digital]] (a aula mais importante daqui), [[7_Criptografia]] (RSA), [[9_Troca de chaves privadas]] (o problema do MITM)
+> **Objetivo:** handshake autenticado. O cliente tem prova criptográfica de que fala com O servidor (e não com um Main in the middle), e de que o servidor registrou a chave dele exatamente como ele enviou.
 
-**O que você está construindo e por quê.** Volte à aula 9: *nenhum método de troca de chaves puro oferece autenticação → MITM possível*. E à aula 11: *a assinatura prova "quem tem a chave privada correspondente assinou", não "Bob assinou" — a ligação identidade↔chave vem do certificado*. O TP resolve os dois com uma construção elegante em miniatura:
+**O que você está construindo e por quê.**
+- Nenhum método de troca de chaves puro oferece autenticação.
+- A assinatura prova "quem tem a chave privada correspondente assinou", não "Bob assinou" — a ligação identidade↔chave vem do certificado. Solução:
 
-1. O servidor tem um par RSA e um **certificado autoassinado** `server.crt`, **pinado** nos clientes (distribuído fora do canal, no seu caso: embutido/presente no projeto). O pinning substitui a CA: como a relação é fixa e conhecida, a "prova autocontida" da aula 11 vira "eu só falo com o dono DESTE certificado". Autoassinado + pinning é o padrão de sistemas fechados (é um mini-PKI, como sua anotação descreve: a CA assina UMA vez o vínculo — aqui, você mesmo assina o vínculo na hora de gerar o certificado).
+1. O servidor tem um par RSA (algoritmo de crip assimétrica) e um **certificado autoassinado** `server.crt`, **pinado** nos clientes. O pinning substitui a CA: como a relação é fixa e conhecida.
+
 2. No handshake, o servidor gera o `salt_srv` (16B) e assina com **RSA-PSS(SHA-256)** o digest `H = SHA256(pk_S ‖ pk_C ‖ client_id ‖ salt_srv)`. Note o que está dentro do hash: a chave pública **do servidor** (prova posse da sk RSA), a chave pública **do cliente** e seu id (o servidor atesta: "registrei EXATAMENTE esta chave para ESTE cliente") e o salt (amarra a assinatura a esta sessão específica). Um MITM que interceptar o registro e trocar `pk_C` quebra a verificação no cliente.
-3. A assinatura acontece **uma vez por conexão** (no handshake) — exatamente o ditado da sua aula: *certificado = uma vez por relação; assinatura = a cada mensagem*. Aqui a "mensagem assinada" é o handshake inteiro.
-
-**O que estudar antes:**
-- Releia [[11_Assinatura e certificado digital]] inteira e [[9_Troca de chaves privadas]] (seção do problema da autenticação).
-- Docs da `cryptography`: **RSA** (`generate_private_key`, `sign`, `verify`), **padding.PSS** (com `MGF1(SHA256)`), **x509** (`CertificateBuilder`, `load_pem_x509_certificate`), **serialization** (`load_pem_private_key`, `Encoding.PEM`), exceção `InvalidSignature`.
-- Para gerar o certificado autoassinado: ou via `CertificateBuilder` da biblioteca, ou via CLI `openssl req` (busque "openssl self-signed certificate x509" — comando único, feito uma vez, fora do código de rede).
+3. A assinatura acontece **uma vez por conexão** (no handshake).
 
 **Tarefas:**
-- [ ] Ferramenta one-off (`tools/gen_cert`): gerar par RSA ≥ 2048 bits (sugestão: 3072) + `server.crt` autoassinado (subject = issuer = CN tp3-server). O par RSA é **de longo prazo** — oposto do par X25519 efêmero; guarde `server.key` fora do controle de versão (`.gitignore`).
-- [ ] Servidor: no boot, carregar `server.key` + `server.crt`.
-- [ ] Cliente: no boot, carregar o `server.crt` **pinado** e extrair `pk_S` dele.
-- [ ] Handshake (servidor): gerar `salt_srv = secrets.token_bytes(16)` (referência: módulo `secrets`, ou `os.urandom`); montar o material `pk_S ‖ pk_C ‖ client_id ‖ salt_srv` (todos cru, na **ordem exata do enunciado**); assinar com RSA-PSS(SHA-256); responder com `server.crt + assinatura + salt_srv`.
-- [ ] Handshake (cliente): conferir que o certificado recebido == o pinado; extrair `pk_S`; remontar o material na mesma ordem com seus próprios valores; `verify(...)` → em caso de `InvalidSignature`, **desconectar imediatamente** e logar o motivo (motivo é logável; o material, não).
-- [ ] Teste negativo (temporário): corromper 1 byte da assinatura antes de verificar → handshake deve falhar. Depois corromper 1 byte do salt → também deve falhar (o hash muda).
-- [ ] Documentar no README a ordem exata dos campos do material assinado (isso É o contrato do protocolo).
+- [x] Ferramenta one-off (`tools/gen_cert`): gerar par RSA ≥ 2048 bits (sugestão: 3072) + `server.crt` autoassinado (subject = issuer = CN tp3-server). O par RSA é **de longo prazo** — oposto do par X25519 efêmero; guarde `server.key` fora do controle de versão (`.gitignore`).
+- [x] Servidor: no boot, carregar `server.key` + `server.crt`.
+- [x] Cliente: no boot, carregar o `server.crt` **pinado** e extrair `pk_S` dele.
+- [x] Handshake (servidor): gerar `salt_srv = secrets.token_bytes(16)` (referência: módulo `secrets`, ou `os.urandom`); montar o material `pk_S ‖ pk_C ‖ client_id ‖ salt_srv` (todos cru, na **ordem exata do enunciado**); assinar com RSA-PSS(SHA-256); responder com `server.crt + assinatura + salt_srv`.
+- [x] Handshake (cliente): conferir que o certificado recebido == o pinado; extrair `pk_S`; remontar o material na mesma ordem com seus próprios valores; `verify(...)` → em caso de `InvalidSignature`, **desconectar imediatamente** e logar o motivo (motivo é logável; o material, não).
+- [x] Teste negativo (temporário): corromper 1 byte da assinatura antes de verificar → handshake deve falhar. Depois corromper 1 byte do salt → também deve falhar (o hash muda).
+- [x] Documentar no README a ordem exata dos campos do material assinado (isso É o contrato do protocolo).
 
 **Critério de concluído:**
-- [ ] Handshake completo entre cliente e servidor com verificação OK nos dois testes positivos.
-- [ ] Os dois testes negativos (assinatura e salt adulterados) resultam em desconexão com log de razão.
+- [x] Handshake completo entre cliente e servidor com verificação OK nos dois testes positivos.
+- [x] Os dois testes negativos (assinatura e salt adulterados) resultam em desconexão com log de razão.
 
 > [!warning] Armadilha nº 1 do TP inteiro
-> A API `sign(data, padding, algorithm)` da `cryptography` aplica SHA-256 **internamente** sobre o que você passar. Então decida a convenção e aplique idêntica nos dois lados: ou (a) você passa o material cru `pk_S‖pk_C‖client_id‖salt` e deixa a biblioteca calcular o hash, ou (b) você passa o hash pré-calculado (aí haverá hash duplo, mas consistente se os dois lados fizerem igual). **Recomendo (a)** — é o que o enunciado descreve ("assina o hash SHA-256 do material"). O bug clássico é o remetente fazer (a) e o verificador fazer (b): a assinatura nunca confere e você passa horas caçando.
+> A API `sign(data, padding, algorithm)` da `cryptography` aplica SHA-256 **internamente** sobre o que você passar. Então decida a convenção e aplique idêntica nos dois lados: ou (a) você passa o material cru `pk_S‖pk_C‖client_id‖salt` e deixa a biblioteca calcular o hash. **Recomendo (a)** — é o que o enunciado descreve ("assina o hash SHA-256 do material"). O bug clássico é o remetente fazer (a) e o verificador fazer (b): a assinatura nunca confere e você passa horas caçando.
 > Outra armadilha: concatenar os campos **sem separadores** é o especificado; qualquer mudança de ordem/encoding (hex em vez de raw, uuid textual em vez de 16B) quebra tudo. Raw bytes, sempre.
 
 > [!example] Decisão a documentar (Anexo B)

@@ -3,12 +3,14 @@ import os
 from protocol.framing import send_frame, recv_frame
 from protocol.ids import generate_client_id, format_client_id
 from protocol.keys import generate_key_pair, serialize_public_key
+from protocol.handshake import verify_server_handshake_response
 
 async def main():
     
+    # Geração do ID do cliente
     client_id = generate_client_id()
     
-    # Geração das chaves
+    # Geração das chaves pública e privada do cliente
     sk, pk = generate_key_pair()
     pk_bytes = serialize_public_key(pk)
 
@@ -19,6 +21,28 @@ async def main():
     await send_frame(writer, registration_frame)
     print(f"Enviado ID de registro: {format_client_id(client_id)}")
 
+    # Receber e verificar resposta do handshake do servidor
+    try:
+        handshake_response = await recv_frame(reader)
+        salt_srv = verify_server_handshake_response(
+            handshake_response,
+            "certs/server.crt",
+            pk_bytes,
+            client_id
+        )
+        print(f"Handshake verificado com sucesso! Salt recebido (hex): {salt_srv.hex()}")
+    except Exception as e:
+        print(f"ERRO DE HANDSHAKE / AUTENTICAÇÃO DO SERVIDOR: {e}")
+        writer.close()
+        await writer.wait_closed()
+        return
+
+    await tests(reader, writer)
+
+    writer.close()
+    await writer.wait_closed()
+
+async def tests(reader, writer):
     # 1. Teste normal
     test_payload = b'ola, este e um teste de framing'
     await send_frame(writer, test_payload)
@@ -42,9 +66,5 @@ async def main():
     except ValueError as e:
         print(f"Sucesso: Erro capturado ao enviar payload grande: {e}")
 
-    writer.close()
-    await writer.wait_closed()
-
 if __name__ == "__main__":
     asyncio.run(main())
-
