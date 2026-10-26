@@ -30,11 +30,12 @@ with open("certs/server.crt", "rb") as f:
 # ---------------------------------------------------------------------------------
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    """Função assíncrona executada para cada cliente."""
+    """Função assíncrona executada para cada cliente (isolada por task)."""
 
     peername = writer.get_extra_info('peername')
     print(f"Nova conexão de {peername}")
     client_id_str = None
+    client_id_bytes = None
 
     try:
         client_id_str, client_id_bytes, pk_c_bytes = await registration(reader, writer)
@@ -42,38 +43,47 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         while True:
             # Recebe o frame do cliente utilizando o leitor de stream
             payload = await recv_frame(reader)
-            print(f"Recebido payload de {len(payload)} bytes de {client_id_str}")
 
             # Se for frame de anúncio de peer (48 bytes), ignorar ou tratar
             if len(payload) == 48:
                 continue
 
-            # Verificação básica: se for frame E2E (>= 68 bytes), encaminhar para o recipient_id
+            # Roteamento E2E (blind relay): se for frame E2E (>= 68 bytes), encaminhar para o recipient_id
             if len(payload) >= 68:
-                recipient_id_bytes = payload[28:44] # recipient_id está nos bytes 28 a 44 (12B nonce + 16B sender + 16B recipient)
+                recipient_id_bytes = payload[28:44] # recipient_id está nos bytes 28 a 44
                 recipient_id_str = format_client_id(recipient_id_bytes)
                 
                 async with sessions_lock:
                     if recipient_id_str in sessions:
                         recipient_writer = sessions[recipient_id_str]['writer']
                         await send_frame(recipient_writer, payload)
-                        print(f"Frame E2E encaminhado de {client_id_str} para {recipient_id_str}")
+                        print(f"[Relay] Frame E2E encaminhado de {client_id_str} para {recipient_id_str} ({len(payload)} bytes)")
                     else:
-                        print(f"Destinatário {recipient_id_str} não encontrado.")
+                        print(f"[Relay] Destinatário {recipient_id_str} não encontrado.")
             else:
-                # Devolve o mesmo payload recebido para o cliente (eco)
+                # Devolve o mesmo payload recebido para o cliente (eco de teste)
                 await send_frame(writer, payload)
 
     except asyncio.IncompleteReadError:
-        print("Conexão fechada pelo cliente.")
+        print(f"Conexão fechada pelo cliente {client_id_str or peername}.")
     except (ValueError, Exception) as e:
-        print(f"Erro de protocolo / Handshake falhou: {e}")
+        print(f"Erro de protocolo / exceção na sessão de {client_id_str or peername}: {e}")
     finally:
-        if client_id_str:
+        if client_id_str and client_id_bytes:
             async with sessions_lock:
                 if client_id_str in sessions:
                     del sessions[client_id_str]
-            print(f"Cliente {client_id_str} desconectado e removido das sessões.")
+                
+                # Notificar pares restantes sobre a saída deste cliente (mensagem administrativa de saída)
+                leave_frame = client_id_bytes + b"\x00" * 32
+                for other_id_str, other_data in sessions.items():
+                    try:
+                        await send_frame(other_data['writer'], leave_frame)
+                    except Exception:
+                        pass
+
+            print(f"Cliente {client_id_str} removido das sessões e peers notificados.")
+
         # Garante o fechamento seguro dos recursos de rede ao finalizar a sessão
         writer.close()
         await writer.wait_closed()
