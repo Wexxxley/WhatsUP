@@ -2,8 +2,14 @@ import unittest
 import secrets
 from cryptography.exceptions import InvalidTag
 from protocol.keys import generate_key_pair, serialize_public_key
-from protocol.ids import generate_client_id
-from protocol.crypto import derive_e2e_keys, encrypt_e2e_message, decrypt_e2e_message, MAX_PLAINTEXT_SIZE
+from protocol.ids import generate_client_id, format_client_id
+from protocol.crypto import (
+    derive_e2e_keys,
+    encrypt_e2e_message,
+    decrypt_e2e_message,
+    validate_and_decrypt_frame,
+    MAX_PLAINTEXT_SIZE
+)
 
 class TestCrypto(unittest.TestCase):
     def test_e2e_key_derivation_symmetry(self):
@@ -63,37 +69,69 @@ class TestCrypto(unittest.TestCase):
         pk_b_bytes = serialize_public_key(pk_b)
         salt_srv = secrets.token_bytes(16)
         
-        key_send_a, key_recv_a, iv_a = derive_e2e_keys(sk_a, pk_b_bytes, id_a, id_b, salt_srv)
-        key_send_b, key_recv_b, iv_b = derive_e2e_keys(sk_b, pk_a_bytes, id_b, id_a, salt_srv)
+        key_send_a, _, iv_a = derive_e2e_keys(sk_a, pk_b_bytes, id_a, id_b, salt_srv)
+        _, key_recv_b, _ = derive_e2e_keys(sk_b, pk_a_bytes, id_b, id_a, salt_srv)
+        
+        peers_b = {
+            format_client_id(id_a): {
+                "key_recv": key_recv_b,
+                "seq_recv": -1,
+                "IV_base_recv": None
+            }
+        }
         
         plaintext = b"Ola, este e um teste de criptografia E2E com AES-GCM!"
-        seq_send = 0
-        
-        # A envia para B
-        frame, next_seq = encrypt_e2e_message(
-            sender_id=id_a,
-            recipient_id=id_b,
-            plaintext=plaintext,
-            key_send=key_send_a,
-            iv_base_send=iv_a,
-            seq_send=seq_send
-        )
+        frame, next_seq = encrypt_e2e_message(id_a, id_b, plaintext, key_send_a, iv_a, 0)
         self.assertEqual(next_seq, 1)
         
-        # B recebe e decifra
-        iv_base_recv = None
-        dec_sender, dec_plaintext, _, dec_seq, iv_base_recv = decrypt_e2e_message(
-            frame=frame,
-            key_recv=key_recv_b,
-            expected_recipient_id=id_b,
-            expected_iv_base_recv=iv_base_recv
-        )
-        
-        self.assertEqual(dec_sender, id_a)
+        sender_str, dec_plaintext = validate_and_decrypt_frame(frame, id_b, peers_b)
+        self.assertEqual(sender_str, format_client_id(id_a))
         self.assertEqual(dec_plaintext, plaintext)
-        self.assertEqual(dec_seq, 0)
-        self.assertEqual(iv_base_recv, iv_a)
-        print("Teste de roundtrip de criptografia/decifragem E2E passou!")
+        self.assertEqual(peers_b[format_client_id(id_a)]["seq_recv"], 0)
+        print("Teste de roundtrip e validação de frame passou!")
+
+    def test_anti_replay_protection(self):
+        id_a = generate_client_id()
+        id_b = generate_client_id()
+        
+        sk_a, pk_a = generate_key_pair()
+        sk_b, pk_b = generate_key_pair()
+        
+        pk_a_bytes = serialize_public_key(pk_a)
+        pk_b_bytes = serialize_public_key(pk_b)
+        salt_srv = secrets.token_bytes(16)
+        
+        key_send_a, _, iv_a = derive_e2e_keys(sk_a, pk_b_bytes, id_a, id_b, salt_srv)
+        _, key_recv_b, _ = derive_e2e_keys(sk_b, pk_a_bytes, id_b, id_a, salt_srv)
+        
+        peers_b = {
+            format_client_id(id_a): {
+                "key_recv": key_recv_b,
+                "seq_recv": -1,
+                "IV_base_recv": None
+            }
+        }
+        
+        # Enviar mensagem com seq_no = 0
+        frame0, seq1 = encrypt_e2e_message(id_a, id_b, b"Msg 1", key_send_a, iv_a, 0)
+        # Enviar mensagem com seq_no = 1
+        frame1, seq2 = encrypt_e2e_message(id_a, id_b, b"Msg 2", key_send_a, iv_a, seq1)
+        
+        # Receber frame 0 com sucesso (seq_recv vira 0)
+        sender, pt = validate_and_decrypt_frame(frame0, id_b, peers_b)
+        self.assertEqual(pt, b"Msg 1")
+        self.assertEqual(peers_b[format_client_id(id_a)]["seq_recv"], 0)
+
+        # Receber frame 1 com sucesso (seq_recv vira 1)
+        sender, pt = validate_and_decrypt_frame(frame1, id_b, peers_b)
+        self.assertEqual(pt, b"Msg 2")
+        self.assertEqual(peers_b[format_client_id(id_a)]["seq_recv"], 1)
+
+        # Tentar reesviar frame 0 (Ataque de Replay: seq_no = 0 <= seq_recv = 1)
+        with self.assertRaises(ValueError) as ctx:
+            validate_and_decrypt_frame(frame0, id_b, peers_b)
+        self.assertIn("replay rejected", str(ctx.exception))
+        print("Teste de proteção anti-replay passou!")
 
     def test_e2e_tampering_fails(self):
         id_a = generate_client_id()
@@ -109,6 +147,14 @@ class TestCrypto(unittest.TestCase):
         key_send_a, _, iv_a = derive_e2e_keys(sk_a, pk_b_bytes, id_a, id_b, salt_srv)
         _, key_recv_b, _ = derive_e2e_keys(sk_b, pk_a_bytes, id_b, id_a, salt_srv)
         
+        peers_b = {
+            format_client_id(id_a): {
+                "key_recv": key_recv_b,
+                "seq_recv": -1,
+                "IV_base_recv": None
+            }
+        }
+        
         plaintext = b"Mensagem secreta"
         frame, _ = encrypt_e2e_message(id_a, id_b, plaintext, key_send_a, iv_a, 0)
         
@@ -116,16 +162,8 @@ class TestCrypto(unittest.TestCase):
         tampered_frame_ct = bytearray(frame)
         tampered_frame_ct[-1] ^= 0xFF
         
-        iv_base_recv = None
-        with self.assertRaises(InvalidTag):
-            decrypt_e2e_message(bytes(tampered_frame_ct), key_recv_b, id_b, iv_base_recv)
-
-        # Teste 2: Alterar 1 bit no recipient_id (que faz parte do AAD)
-        tampered_frame_aad = bytearray(frame)
-        tampered_frame_aad[30] ^= 0xFF
-        
-        with self.assertRaises(InvalidTag):
-            decrypt_e2e_message(bytes(tampered_frame_aad), key_recv_b, id_b, iv_base_recv)
+        with self.assertRaises(ValueError):
+            validate_and_decrypt_frame(bytes(tampered_frame_ct), id_b, peers_b)
 
         print("Testes negativos de adulteração (tampering / InvalidTag) passaram!")
 

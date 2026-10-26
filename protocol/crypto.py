@@ -4,6 +4,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from protocol.keys import deserialize_public_key
+from protocol.ids import format_client_id
 
 MAX_PLAINTEXT_SIZE = 4096
 
@@ -124,3 +125,51 @@ def decrypt_e2e_message(
         raise ValueError("Recipient ID do frame não confere com o ID esperado")
 
     return sender_id, plaintext, iv_base, seq_no, expected_iv_base_recv
+
+def validate_and_decrypt_frame(
+    frame: bytes,
+    client_id_self: bytes,
+    peers: dict
+) -> tuple[str, bytes]:
+    """
+    Valida e decifra um frame E2E aplicando anti-replay (seq_no > seq_recv)
+    e ordem correta de verificação (seq -> decifragem/tag -> atualiza seq_recv).
+    """
+    MIN_FRAME_SIZE = 12 + 16 + 16 + 8 + 16
+    if len(frame) < MIN_FRAME_SIZE:
+        raise ValueError("bad framing: frame muito curto")
+
+    sender_id = frame[12:28]
+    recipient_id = frame[28:44]
+    seq_bytes = frame[44:52]
+    
+    sender_id_str = format_client_id(sender_id)
+
+    if sender_id_str not in peers:
+        raise ValueError(f"Remetente desconhecido: {sender_id_str}")
+
+    peer = peers[sender_id_str]
+    seq_no = int.from_bytes(seq_bytes, 'big')
+
+    # 1. Validação anti-replay: aceitar apenas seq_no > seq_recv
+    if seq_no <= peer["seq_recv"]:
+        print(f"[LOG] replay rejected: peer={sender_id_str}, seq_received={seq_no}, seq_recv={peer['seq_recv']}")
+        raise ValueError("replay rejected")
+
+    # 2. Decifragem e validação da tag GCM (autenticidade e integridade)
+    try:
+        _, plaintext, _, _, updated_iv_base = decrypt_e2e_message(
+            frame=frame,
+            key_recv=peer["key_recv"],
+            expected_recipient_id=client_id_self,
+            expected_iv_base_recv=peer["IV_base_recv"]
+        )
+        peer["IV_base_recv"] = updated_iv_base
+    except Exception as e:
+        print(f"[LOG] tag mismatch / decrypion error: peer={sender_id_str}")
+        raise ValueError("tag mismatch") from e
+
+    # 3. Atualizar seq_recv APÓS decifragem bem-sucedida
+    peer["seq_recv"] = seq_no
+
+    return sender_id_str, plaintext
