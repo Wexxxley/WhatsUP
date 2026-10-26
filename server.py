@@ -13,10 +13,13 @@ from protocol.handshake import (
 class SessionData(TypedDict):
     writer: asyncio.StreamWriter
     public_key: X25519PublicKey
+    client_id_bytes: bytes
+    pk_bytes: bytes
     seq_send: int
     seq_recv: int
     salt: bytes
 
+sessions_lock = asyncio.Lock()
 sessions: dict[str, SessionData] = {}
 
 # Carregar chave privada e certificado do servidor no boot
@@ -31,22 +34,46 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
     peername = writer.get_extra_info('peername')
     print(f"Nova conexão de {peername}")
+    client_id_str = None
 
     try:
-        client_id_str = await registration(reader, writer)
+        client_id_str, client_id_bytes, pk_c_bytes = await registration(reader, writer)
 
         while True:
             # Recebe o frame do cliente utilizando o leitor de stream
             payload = await recv_frame(reader)
             print(f"Recebido payload de {len(payload)} bytes de {client_id_str}")
-            # Devolve o mesmo payload recebido para o cliente (eco)
-            await send_frame(writer, payload)
+
+            # Se for frame de anúncio de peer (48 bytes), ignorar ou tratar
+            if len(payload) == 48:
+                continue
+
+            # Verificação básica: se for frame E2E (>= 68 bytes), encaminhar para o recipient_id
+            if len(payload) >= 68:
+                recipient_id_bytes = payload[28:44] # recipient_id está nos bytes 28 a 44 (12B nonce + 16B sender + 16B recipient)
+                recipient_id_str = format_client_id(recipient_id_bytes)
+                
+                async with sessions_lock:
+                    if recipient_id_str in sessions:
+                        recipient_writer = sessions[recipient_id_str]['writer']
+                        await send_frame(recipient_writer, payload)
+                        print(f"Frame E2E encaminhado de {client_id_str} para {recipient_id_str}")
+                    else:
+                        print(f"Destinatário {recipient_id_str} não encontrado.")
+            else:
+                # Devolve o mesmo payload recebido para o cliente (eco)
+                await send_frame(writer, payload)
 
     except asyncio.IncompleteReadError:
         print("Conexão fechada pelo cliente.")
     except (ValueError, Exception) as e:
         print(f"Erro de protocolo / Handshake falhou: {e}")
     finally:
+        if client_id_str:
+            async with sessions_lock:
+                if client_id_str in sessions:
+                    del sessions[client_id_str]
+            print(f"Cliente {client_id_str} desconectado e removido das sessões.")
         # Garante o fechamento seguro dos recursos de rede ao finalizar a sessão
         writer.close()
         await writer.wait_closed()
@@ -75,24 +102,39 @@ async def registration(reader, writer):
     await send_frame(writer, handshake_response)
     print(f"Handshake realizado com sucesso para o cliente {client_id_str} (salt gerado)")
 
-    sessions[client_id_str] = {
+    async with sessions_lock:
+        # 1. Enviar contagem de peers existentes e os dados de cada peer para o novo cliente
+        num_peers = len(sessions)
+        await send_frame(writer, num_peers.to_bytes(4, 'big'))
+
+        for existing_id_str, existing_data in sessions.items():
+            # Envia peer existente para o novo cliente
+            peer_info = existing_data['client_id_bytes'] + existing_data['pk_bytes']
+            await send_frame(writer, peer_info)
+
+            # Envia o novo cliente para cada peer existente
+            new_client_info = client_id_bytes + pk_c_bytes
+            await send_frame(existing_data['writer'], new_client_info)
+
+        # 2. Registrar o novo cliente na tabela sessions
+        sessions[client_id_str] = {
             'writer': writer,
             'public_key': pk_c,
-            'seq_send': 0,  # número sequencial da próxima mensagem que este cliente vai enviar.
-            'seq_recv': -1, # número sequencial da última mensagem válida que este cliente recebeu.
+            'client_id_bytes': client_id_bytes,
+            'pk_bytes': pk_c_bytes,
+            'seq_send': 0,
+            'seq_recv': -1,
             'salt': salt_srv
         }
-    return client_id_str
+
+    return client_id_str, client_id_bytes, pk_c_bytes
 
 async def main():
     """Função principal do servidor responsável por inicializar o listener TCP."""
 
-    # Necessariamente o handle precisa ser passado como callback e precisa de reader e writer
-    # O próprio asyncio instancia o reader e writer para cada conexão de cliente
     server = await asyncio.start_server(handle_client, '127.0.0.1', 8888)
     print("Servidor iniciado em 127.0.0.1:8888")
 
-    # Mantém o servidor em execução permanente
     async with server:
         await server.serve_forever()
 

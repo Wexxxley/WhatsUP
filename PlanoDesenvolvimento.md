@@ -166,7 +166,6 @@ Nesta etapa o servidor só **registra** (ainda não autentica nada). A tabela `s
 
 > [!summary] Ficha rápida
 > **Objetivo:** para cada par de clientes, derivar as duas chaves de direção (`Key_A2B`, `Key_B2A`) e preencher a tabela `peers` — o coração do E2E.
-> **Tempo estimado:** ~5 h · **Depende de:** Etapa 4 · **Aulas que sustentam:** [[9_Troca de chaves privadas]] (DH), [[10_Key Derivation Function]] (KDF/salt), [[8_Função Hash e Mac]] (HMAC, base do HKDF)
 
 **O que você está construindo e por quê.** Com as chaves públicas distribuídas (o servidor envia a pk do novo cliente a todos e as pks de todos ao novo — a função *rendezvous* do enunciado), cada cliente calcula o segredo compartilhado `Z_AB = ECDH(sk_A, pk_B)` usando a própria sk e a pk recebida. Pela propriedade do DH (as tintas da aula 9!), A e B chegam ao **mesmo** Z — e o servidor, que só tem chaves públicas, **não consegue** calculá-lo. É literalmente a garantia "servidor cego" do enunciado nascendo.
 
@@ -176,10 +175,6 @@ Conexão com a aula 10 (importante para não confundir na prova também): **HKDF
 
 Sobre a prática com a biblioteca: a classe `HKDF` da `cryptography` faz Extract+Expand **numa chamada só** (você passa `salt`, `info` e `length`, e chama `.derive(Z)`). Não existe "HKDF-Extract isolado" exposto — e não precisa: chamar a classe duas vezes, com o mesmo salt e infos `b"A2B"` e `b"B2A"`, produz exatamente o par de chaves do enunciado. Trate os estágios como conceito (bom para a prova e para a apresentação) e a chamada única como implementação.
 
-**O que estudar antes:**
-- Releia [[10_Key Derivation Function]] (foco: qual o papel do salt; por que KDF de senha é lento e esta não precisa ser) e [[8_Função Hash e Mac]] (HMAC — o HKDF é HMAC-SHA256 dentro).
-- RFC 5869 (HKDF) — é curtinho; a seção 2 (Extract e Expand) liga exatamente com as fórmulas do enunciado.
-- Docs da `cryptography`: seção **Key derivation → HKDF**.
 
 **Tarefas:**
 - [ ] Distribuição de pks: quando um novo cliente registra, o servidor (a) envia a pk dele para todos os conectados e (b) envia as pks existentes para ele. Sem isso, o E2E não começa.
@@ -239,7 +234,6 @@ A estrutura do frame é a do enunciado: `[nonce 12B ‖ sender_id 16B ‖ recipi
 
 > [!summary] Ficha rápida
 > **Objetivo:** rejeitar frames repetidos/adulterados/inválidos de forma segura e com logs corretos — 20% da nota mora aqui.
-> **Tempo estimado:** ~3 h · **Depende de:** Etapa 6 · **Aulas que sustentam:** [[12_Protocolos de Segurança]] (forgery), [[8_Função Hash e Mac]] (por que a tag sozinha não impede replay)
 
 **O que você está construindo e por quê.** Insight contraintuitivo que você precisa consolidar: **a tag GCM não protege contra replay**. Um atacante que copia um frame *inteiro, intacto*, e o reenvia, tem tag válida — do ponto de vista do GCM, aquilo é uma mensagem perfeita. Replay é um ataque contra o **estado do protocolo**, não contra a criptografia; por isso o TP exige o `seq_no` monotônico por direção, mantido na tabela `peers`. A regra simples e suficiente para este trabalho: aceitar apenas `seq_no > seq_recv` (sem janela deslizante; o TLS 1.3 usa janela, e citar essa diferença na apresentação rende ponto). O `seq_recv` só é atualizado **depois** da decifragem bem-sucedida — a ordem importa: valida seq → decifra → atualiza contador.
 
