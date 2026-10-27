@@ -1,20 +1,21 @@
 # WhatsUp — Sistema de Mensageria Segura Multi-Cliente (E2E)
 
-Trabalho Prático 3 (TP3) — Disciplina de Segurança da Informação  
-**Professor:** Michel Sales  
 
 ---
 
+
 ## Visão Geral
 
-O **WhatsUp** é uma aplicação de mensageria segura multi-cliente com criptografia ponta-a-ponta (**E2E**). O servidor atua estritamente como um **relay/rendezvous cego**, sem capacidade de decifrar o conteúdo das mensagens trocadas entre os clientes. Cada cliente realiza um handshake autenticado com o servidor para registrar sua chave pública efêmera e receber as chaves públicas dos demais participantes.
+Aplicação de mensageria com criptografia ponta-a-ponta (**E2E**). O servidor atua como um **relay**, sem capacidade de decifrar o conteúdo das mensagens trocadas entre os clientes. Cada cliente realiza um handshake autenticado com o servidor para registrar sua chave pública efêmera/temporária e eceber as chaves públicas dos demais participantes.
 
 ### Garantias de Segurança
-1. **Confidencialidade:** As mensagens são cifradas de ponta a ponta utilizando **AES-128-GCM (AEAD)**.
+1. **Confidencialidade:** As mensagens são cifradas de ponta a ponta utilizando **AES-128-GCM (AEAD - Authenticated Encryption with Associated Data)** que é do tipo **Encrypt-then-MAC (EtM)**.
 2. **Integridade:** Qualquer adulteração no tráfego é detectada pela tag de autenticação GCM (`InvalidTag`).
-3. **Autenticidade:** O servidor é autenticado perante os clientes utilizando **RSA-PSS com SHA-256** e certificado autoassinado pinado (`certs/server.crt`).
-4. **Sigilo Perfeito (Forward Secrecy):** Obtido através do uso de chaves efêmeras **X25519 (ECDHE)** a cada sessão.
-5. **Anti-Replay:** Proteção contra reenvio de mensagens garantida por contadores monotônicos por direção (`seq_no > seq_recv`).
+3. **Autenticidade:** O servidor é autenticado perante os clientes utilizando **RSA-PSS com SHA-256** e certificado autoassinado pinado.
+4. **Sigilo Perfeito:** Obtido através do uso de chaves efêmeras/temporárias **X25519 (ECDHE -  Diffie-Hellman baseado em Curvas Elípticas)** a cada sessão.
+5. **Anti-Replay:** Proteção contra reenvio de mensagens.
+
+- **Handshake** etapa de autenticação entre o cliente o servidor após a abertura da conexão TCP e o envio do registro inicial (client_id + pk_C).
 
 ---
 
@@ -23,24 +24,18 @@ O **WhatsUp** é uma aplicação de mensageria segura multi-cliente com criptogr
 ```
 WhatsUp/
 ├── server.py               # Servidor TCP assíncrono (relay cego e gerenciamento de sessões)
-├── client.py               # Cliente de mensageria e testes E2E
+├── client.py               # Cliente de mensageria
 ├── protocol/
-│   ├── framing.py          # Delimitação de frames com prefixo de 4 bytes (big-endian) e limites
-│   ├── ids.py              # Manipulação de UUID v4 binário (16 bytes) e formatação
-│   ├── handshake.py        # Handshake autenticado (RSA-PSS com SHA-256 e server pinning)
+│   ├── framing.py          # Delimitação de frames com prefixo de 4 bytes (big-endian)
+│   ├── ids.py              # Manipulação de UUID v4
+│   ├── handshake.py        # Handshake
 │   ├── keys.py             # Pares X25519, serialização raw e fingerprints
-│   ├── crypto.py           # Cifragem AES-128-GCM (nonce, AAD), HKDF-SHA256 e anti-replay
-│   └── admin.py            # Estruturas de controle administrativo
+│   ├── crypto.py           # Cifragem AES-128-GCM, HKDF-SHA256 e anti-replay
 ├── tools/
-│   └── generate_certificate.py # Ferramenta one-off para gerar server.key e server.crt
+│   └── generate_certificate.py 
 ├── certs/
 │   ├── server.crt          # Certificado público do servidor (pinado nos clientes)
-│   └── server.key          # Chave privada do servidor (estritamente confidencial / .gitignore)
-├── tests/
-│   ├── test_handshake.py   # Testes unitários do handshake e assinaturas RSA-PSS
-│   ├── test_crypto.py      # Testes unitários de derivação de chaves e AEAD AES-GCM
-│   └── test_integration.py # Testes de integração cobrindo a matriz da rubrica (T1 a T4)
-└── README.md               # Documentação completa
+│   └── server.key          # Chave privada do servidor
 ```
 
 ---
@@ -70,37 +65,12 @@ Em outro terminal, execute o cliente:
 python3 client.py
 ```
 
+Após o handshake, o cliente abre uma interface interativa no terminal. Use as setas para selecionar um peer e Enter para abrir a conversa. Digite a mensagem e pressione Enter para enviar; as mensagens recebidas aparecem no histórico sem interromper a digitação. Pressione Esc ou digite `/voltar` para retornar à lista, e `q` na lista ou `/sair` na conversa para encerrar.
+
+Entradas e saídas de peers são atualizadas automaticamente. As chaves E2E são derivadas com um salt comum e determinístico por par de IDs, pois o salt de handshake é específico de cada conexão.
+
 ### 5. Executando a Suíte de Testes
-Para rodar todos os testes unitários e de integração (incluindo os testes da rubrica):
+Para rodar todos os testes unitários e de integração
 ```bash
 python3 -m unittest discover tests
 ```
-
----
-
-## Matriz de Aceitação e Testes Obrigatórios (Etapa 9)
-
-| Teste | Descrição / Entrada | Resultado Esperado | Garantia Demonstrada |
-|---|---|---|---|
-| **T1** | Dois clientes honestos trocam mensagens E2E. | Mensagem decifrada corretamente no destino. | Confidencialidade + Integridade + Autenticidade |
-| **T2** | Modificação de 1 bit no ciphertext ou no AAD (`recipient_id`). | Rejeição imediata com erro `tag mismatch` (`InvalidTag`). | Integridade / Anti-forgery |
-| **T3** | Reenvio de um frame válido já entregue (`seq_no` duplicado). | Rejeição imediata com log `replay rejected`. | Proteção Anti-Replay (`seq_no` monotônico) |
-| **T4** | Envio de um frame excedendo o tamanho máximo permitido (`MAX_FRAME_SIZE`). | Desconexão segura do cliente/servidor (fail-closed) sem crash. | Robustez de Framing e Tratamento de Erros |
-
----
-
-## Política de Segurança e Auditoria de Logs (Etapa 10)
-
-O sistema cumpre estritamente a política de privacidade e segurança exigida:
-- **O que NUNCA é logado:** Chaves privadas (RSA ou X25519), segredos compartilhados `Z`, salt em texto claro, nonces e conteúdo de mensagens (plaintexts).
-- **O que é permitido e logado:** Eventos de conexão e desconexão, `client_id` (formatado), tamanhos de mensagens, razões de rejeição (`tag mismatch`, `replay rejected`) e fingerprints de chaves públicas (`SHA-256(pk)` truncado em 8 bytes hex).
-- **Filosofia Fail-Closed:** Qualquer violação de protocolo (tag inválida, sequência repetida, framing inválido) encerra imediatamente a sessão afetada de forma segura.
-
----
-
-## Decisões de Projeto (Anexo B)
-
-1. **Seleção de "A" e "B" no ECDH:** Para qualquer par, os `client_id` são ordenados como bytes. O menor ID é definido como "A" e o maior como "B", garantindo que ambos os lados derivem deterministicamente as mesmas chaves nas direções corretas (`Key_A2B` e `Key_B2A`).
-2. **Contador de Sequência (`seq_send`):** Incrementado **após** a cifragem com o valor atual (iniciando em 0), compatível com o estado inicial `seq_recv = -1` do receptor.
-3. **Servidor Cego (Blind Relay):** O servidor atua apenas como roteador de bytes. Ele não possui acesso às chaves E2E e não consegue decifrar as mensagens.
-4. **Isolamento de Conexões:** Cada cliente é tratado em uma `asyncio.Task` independente protegida por `asyncio.Lock`, garantindo que falhas ou desconexões em uma sessão não afetem as demais.

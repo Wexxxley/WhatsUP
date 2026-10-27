@@ -6,7 +6,6 @@ from protocol.ids import format_client_id
 from protocol.keys import deserialize_public_key
 from protocol.handshake import (
     load_server_private_key,
-    load_server_certificate,
     create_server_handshake_response
 )
 
@@ -19,10 +18,9 @@ class SessionData(TypedDict):
     seq_recv: int
     salt: bytes
 
-sessions_lock = asyncio.Lock()
+sessions_lock = asyncio.Lock() # serve para garantir a concorrência segura (thread-safe) e fila de espera
 sessions: dict[str, SessionData] = {}
 
-# Carregar chave privada e certificado do servidor no boot
 SERVER_PRIV_KEY = load_server_private_key()
 with open("certs/server.crt", "rb") as f:
     SERVER_CERT_BYTES = f.read()
@@ -32,13 +30,15 @@ with open("certs/server.crt", "rb") as f:
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     """Função assíncrona executada para cada cliente (isolada por task)."""
 
-    peername = writer.get_extra_info('peername')
-    print(f"Nova conexão de {peername}")
+    
+    peername = writer.get_extra_info('peername') # tupla do tipo ('127.0.0.1', 42176)
+    # Declarando antes pq são necessárias fora do try
     client_id_str = None
     client_id_bytes = None
 
     try:
-        client_id_str, client_id_bytes, pk_c_bytes = await registration(reader, writer)
+        # Frame inicial de registro do cliente
+        (client_id_str, client_id_bytes, pk_c_bytes) = await registration(reader, writer)
 
         while True:
             # Recebe o frame do cliente utilizando o leitor de stream
@@ -142,6 +142,7 @@ async def registration(reader, writer):
 async def main():
     """Função principal do servidor responsável por inicializar o listener TCP."""
 
+    # Inicializa o servidor TCP, passagem de handle_client como callback para cada nova conexão
     server = await asyncio.start_server(handle_client, '127.0.0.1', 8888)
     print("Servidor iniciado em 127.0.0.1:8888")
 
