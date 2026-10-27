@@ -59,7 +59,6 @@ async def main():
         )
         print(f"Handshake verificado com sucesso! Salt recebido (hex): {salt_srv.hex()}")
 
-        # Receber número de peers existentes
         num_peers_bytes = await recv_frame(reader)
         num_peers = int.from_bytes(num_peers_bytes, 'big')
         print(f"Recebendo {num_peers} peer(s) inicial(is)...")
@@ -110,21 +109,32 @@ def add_peer(
     client_id: bytes,
     sk: X25519PrivateKey,
 ) -> None:
-    # Handshake salts are per connection, so both peers derive the same public pair salt.
+    """
+    Adiciona um novo peer à lista de contatos (dicionário peers) do cliente:
+    1. Gera um salt determinístico compartilhado (pair_salt) ordenando os IDs de forma simétrica.
+    2. Deriva as chaves simétricas E2E (key_send, key_recv) via ECDH (X25519) + HKDF-SHA256.
+    3. Inicializa o estado de contadores de sequência (seq_send=0, seq_recv=-1) e IVs.
+    """
+    # 1. Gerar salt determinístico compartilhado entre o par (independente de quem conectou primeiro)
+    # min e max garantem que tanto A quanto B gerem exatamente o mesmo pair_salt.
     pair_salt = hashlib.sha256(
         b"WhatsUp E2E" + min(client_id, peer_id_bytes) + max(client_id, peer_id_bytes)
     ).digest()
+    
+    # 2. Derivar chaves E2E e IV base de envio
     key_send, key_recv, iv_base_send = derive_e2e_keys(
         sk, peer_pk_bytes, client_id, peer_id_bytes, pair_salt
     )
+    
+    # 3. Registrar o peer e seu estado criptográfico na tabela local
     peers[peer_id_str] = {
         "public_key": deserialize_public_key(peer_pk_bytes),
         "key_send": key_send,
         "key_recv": key_recv,
-        "seq_send": 0,
-        "seq_recv": -1,
+        "seq_send": 0,       # Próximo sequence number para envio
+        "seq_recv": -1,      # Último sequence number recebido (-1 indica nenhuma msg ainda)
         "IV_base_send": iv_base_send,
-        "IV_base_recv": None,
+        "IV_base_recv": None, # Aprende o IV base a partir do primeiro frame recebido
     }
 
 

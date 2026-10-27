@@ -3,3 +3,4 @@ __pycache__/
 server.key
 *.log
 certs/
+estudos/

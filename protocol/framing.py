@@ -4,7 +4,7 @@ MAX_FRAME_SIZE = 4200
 
 async def send_frame(writer: asyncio.StreamWriter, payload: bytes):
     """ Empacota e envia um payload através do canal de escrita (writer).
-    O pacote é composto por um prefixo de 4 bytes seguidos pelo payload """
+    Prefixo-4B + payload-nB"""
     
     if len(payload) > MAX_FRAME_SIZE:
         raise ValueError("Payload excedeu o limite máximo")

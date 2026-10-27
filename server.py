@@ -102,27 +102,24 @@ async def registration(reader, writer):
     pk_c = deserialize_public_key(pk_c_bytes)
 
     # Executar handshake: assinar pk_S || pk_C || client_id || salt_srv
-    (handshake_response, salt_srv) = create_server_handshake_response(
-        SERVER_PRIV_KEY,
-        SERVER_CERT_BYTES,
-        pk_c_bytes,
-        client_id_bytes
-    )
+    (handshake_response, salt_srv) = create_server_handshake_response(SERVER_PRIV_KEY, SERVER_CERT_BYTES, pk_c_bytes, client_id_bytes)
 
     await send_frame(writer, handshake_response)
     print(f"Handshake realizado com sucesso para o cliente {client_id_str} (salt gerado)")
 
+#---
+
     async with sessions_lock:
-        # 1. Enviar contagem de peers existentes e os dados de cada peer para o novo cliente
+        # Enviar contagem de clientes online para que o cliente possa esperar x respostas
         num_peers = len(sessions)
         await send_frame(writer, num_peers.to_bytes(4, 'big'))
 
         for existing_id_str, existing_data in sessions.items():
-            # Envia peer existente para o novo cliente
+            # Envia peer para o novo cliente
             peer_info = existing_data['client_id_bytes'] + existing_data['pk_bytes']
             await send_frame(writer, peer_info)
 
-            # Envia o novo cliente para cada peer existente
+            # Envia o novo cliente para cada peer
             new_client_info = client_id_bytes + pk_c_bytes
             await send_frame(existing_data['writer'], new_client_info)
 
@@ -132,8 +129,8 @@ async def registration(reader, writer):
             'public_key': pk_c,
             'client_id_bytes': client_id_bytes,
             'pk_bytes': pk_c_bytes,
-            'seq_send': 0,
-            'seq_recv': -1,
+            'seq_send': 0, # Seq da proxima msg enviada ao cliente
+            'seq_recv': -1, # Seq da ultima msg recebida do cliente
             'salt': salt_srv
         }
 
