@@ -252,3 +252,14 @@ No protocolo, seq_send e seq_recv são contadores mntidos pelo SERVER essenciais
 
   Payload = [Tamanho do Cert] ∥ [server.crt (certificado contendo  pk_S)] ∥ [Tamanho da Assinatura] ∥ [Assinatura RSA-PSS] ∥ [saltₛrv]
 
+
+---
+
+1. Geração das chaves públicas:
+      * Cada parte possui uma chave privada e gera sua chave pública multiplicando sua chave privada pelo ponto gerador G da curva:
+        * PK_A = sk_A · G
+        * PK_B = sk_B · G
+
+   2. A troca (.exchange):
+      * Segredo_A = sk_A · (sk_B · G)
+      * Segredo_B = sk_B · (sk_A · G)

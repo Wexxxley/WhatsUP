@@ -20,7 +20,7 @@ from protocol.crypto import (
 )
 
 class PeerData(TypedDict):
-    public_key: X25519PublicKey
+    public_key_b: X25519PublicKey
     key_send: bytes
     key_recv: bytes
     seq_send: int
@@ -36,8 +36,8 @@ async def main():
     print(f"Meu client_id: {client_id_str}")
     
     # Geração das chaves pública e privada do cliente
-    sk, pk = generate_key_pair()
-    pk_bytes = serialize_public_key(pk)
+    sk_a, pk_a = generate_key_pair()
+    pk_bytes = serialize_public_key(pk_a)
 
     peers: dict[str, PeerData] = {}
 
@@ -71,10 +71,7 @@ async def main():
             peer_pk_bytes = peer_frame[16:]
             peer_id_str = format_client_id(peer_client_id_bytes)
 
-            add_peer(
-                peers, peer_id_str, peer_client_id_bytes, peer_pk_bytes,
-                client_id, sk
-            )
+            add_peer(peers, peer_id_str, peer_client_id_bytes, peer_pk_bytes,client_id, sk_a)
             print(f"Peer online: {peer_id_str}")
 
     except Exception as e:
@@ -85,7 +82,7 @@ async def main():
 
     history: dict[str, list[tuple[str, str]]] = {}
     receiver = asyncio.create_task(
-        receive_messages(reader, peers, client_id, sk, history)
+        receive_messages(reader, peers, client_id, sk_a, history)
     )
     try:
         await terminal_chat(writer, peers, client_id, history)
@@ -107,28 +104,24 @@ def add_peer(
     peer_id_bytes: bytes,
     peer_pk_bytes: bytes,
     client_id: bytes,
-    sk: X25519PrivateKey,
+    sk_a: X25519PrivateKey,
 ) -> None:
     """
-    Adiciona um novo peer à lista de contatos (dicionário peers) do cliente:
-    1. Gera um salt determinístico compartilhado (pair_salt) ordenando os IDs de forma simétrica.
-    2. Deriva as chaves simétricas E2E (key_send, key_recv) via ECDH (X25519) + HKDF-SHA256.
+    Adiciona um novo peer à lista de contatos do cliente:
+    1. Gera um salt compartilhado (pair_salt) ordenando os IDs de forma simétrica.
+    2. Deriva as chaves simétricas (key_send, key_recv) via ECDH (X25519) + HKDF-SHA256.
     3. Inicializa o estado de contadores de sequência (seq_send=0, seq_recv=-1) e IVs.
     """
-    # 1. Gerar salt determinístico compartilhado entre o par (independente de quem conectou primeiro)
+    # Gerar salt compartilhado entre o par (independente de quem conectou primeiro)
     # min e max garantem que tanto A quanto B gerem exatamente o mesmo pair_salt.
-    pair_salt = hashlib.sha256(
-        b"WhatsUp E2E" + min(client_id, peer_id_bytes) + max(client_id, peer_id_bytes)
-    ).digest()
+    pair_salt = hashlib.sha256(b"WhatsUp E2E" + min(client_id, peer_id_bytes) + max(client_id, peer_id_bytes)).digest()
     
-    # 2. Derivar chaves E2E e IV base de envio
-    key_send, key_recv, iv_base_send = derive_e2e_keys(
-        sk, peer_pk_bytes, client_id, peer_id_bytes, pair_salt
-    )
+    # Derivar chaves E2E e IV base de envio
+    key_send, key_recv, iv_base_send = derive_e2e_keys(sk_a, peer_pk_bytes, client_id, peer_id_bytes, pair_salt)
     
-    # 3. Registrar o peer e seu estado criptográfico na tabela local
+    # Registrar o peer e seu estado criptográfico na tabela local
     peers[peer_id_str] = {
-        "public_key": deserialize_public_key(peer_pk_bytes),
+        "public_key_b": deserialize_public_key(peer_pk_bytes),
         "key_send": key_send,
         "key_recv": key_recv,
         "seq_send": 0,       # Próximo sequence number para envio
@@ -136,8 +129,7 @@ def add_peer(
         "IV_base_send": iv_base_send,
         "IV_base_recv": None, # Aprende o IV base a partir do primeiro frame recebido
     }
-
-
+    
 async def receive_messages(
     reader: asyncio.StreamReader,
     peers: dict[str, PeerData],

@@ -9,50 +9,48 @@ from protocol.ids import format_client_id
 MAX_PLAINTEXT_SIZE = 4096
 
 def derive_e2e_keys(
-    sk_client: X25519PrivateKey,
-    pk_peer_bytes: bytes,
-    client_id_self: bytes,
-    client_id_peer: bytes,
-    salt_srv: bytes
+    sk_a: X25519PrivateKey,
+    pk_b_bytes: bytes,
+    client_id_a: bytes,
+    client_id_b: bytes,
+    pair_salt: bytes
 ) -> tuple[bytes, bytes, bytes]:
     """
     Calcula Z_AB via ECDH entre a chave privada do cliente e a chave pública do peer,
-    deriva as chaves simétricas E2E usando HKDF-SHA256 (com labels 'A2B' e 'B2A'),
-    determina A e B deterministicamente pela ordem dos client_ids (menor id é A),
+    deriva as chaves simétricas E2E usando HKDF-SHA256,
     e retorna (key_send, key_recv, iv_base_send).
     O segredo Z_AB é descartado após a derivação.
     """
-    pk_peer_obj = deserialize_public_key(pk_peer_bytes)
-    z_ab = sk_client.exchange(pk_peer_obj)
-
+    pk_b = deserialize_public_key(pk_b_bytes)
+    z_ab = sk_a.exchange(pk_b) # pk_a = sk_A · G  (fator gerador, n secreto)-> Z_aB = sk_A · (sk_B · G)
+    
     # Derivar chaves via HKDF-SHA256
-    hkdf_a2b = HKDF(
+    hkdf_a = HKDF(
         algorithm=hashes.SHA256(),
         length=16,
-        salt=salt_srv,
-        info=b"A2B"
+        salt=pair_salt,
+        info=b"A" # chave exclusiva para msg de A para B
     )
-    key_a2b = hkdf_a2b.derive(z_ab)
+    key_a = hkdf_a.derive(z_ab)
 
-    hkdf_b2a = HKDF(
+    hkdf_b = HKDF(
         algorithm=hashes.SHA256(),
         length=16,
-        salt=salt_srv,
-        info=b"B2A"
+        salt=pair_salt, 
+        info=b"B" # chave exclusiva para msg de B para A
     )
-    key_b2a = hkdf_b2a.derive(z_ab)
+    key_b = hkdf_b.derive(z_ab)
 
-    # Regra determinística: o menor client_id (em comparação de bytes) é "A"
-    if client_id_self < client_id_peer:
-        # Self é A, Peer é B
-        key_send = key_a2b
-        key_recv = key_b2a
+    if client_id_a < client_id_b:
+        # A é o menor, B é o maior
+        key_send = key_a
+        key_recv = key_b
     else:
-        # Self é B, Peer é A
-        key_send = key_b2a
-        key_recv = key_a2b
+        # B é o menor, A é o maior
+        key_send = key_b
+        key_recv = key_a
 
-    iv_base_send = secrets.token_bytes(4)
+    iv_base_send = secrets.token_bytes(4) # 
 
     # Z_ab sai de escopo aqui e é coletado pelo garbage collector (descartado)
     return key_send, key_recv, iv_base_send
