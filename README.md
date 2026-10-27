@@ -107,6 +107,10 @@ python3 -m unittest discover tests
 
 6. **Protocolos de Segurança e AEAD ([[12_Protocolos de Segurança]]):**
    - *AEAD (Authenticated Encryption with Associated Data):* Combina confidencialidade, integridade e autenticidade, além de proteger dados associados (cabeçalhos do protocolo) contra adulteração. O algoritmo escolhido é o **AES-128-GCM**, que opera na composição mais segura (*Encrypt-then-MAC* embutida)
+7. **Gerar entropia:** significa coletar dados de fontes aleatórias para criar uma fonte
+  de aleatoriedade. Chaves criptográficas, nonces e salts exigem alta imprevisibilidade para que atacantes não possam adivinhá-los. Se um gerador de números pseudo-aleatórios for alimentado por uma seed fraca ou
+  previsível, todas as chaves geradas por ele podem ser descobertas. 
+
 
 ---
 

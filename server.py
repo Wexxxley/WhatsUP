@@ -8,6 +8,14 @@ from protocol.handshake import (
     load_server_private_key,
     create_server_handshake_response
 )
+from protocol.spec import (
+    MIN_E2E_FRAME_SIZE,
+    REGISTRATION_FRAME_SIZE,
+    CLIENT_ID_SIZE,
+    X25519_KEY_SIZE,
+    NONCE_SIZE,
+    PEER_LEAVE_PUBLIC_KEY
+)
 
 class SessionData(TypedDict):
     writer: asyncio.StreamWriter
@@ -44,13 +52,9 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             # Recebe o frame do cliente utilizando o leitor de stream
             payload = await recv_frame(reader)
 
-            # Se for frame de anúncio de peer (48 bytes), ignorar ou tratar
-            if len(payload) == 48:
-                continue
-
-            # Roteamento E2E (blind relay): se for frame E2E (>= 68 bytes), encaminhar para o recipient_id
-            if len(payload) >= 68:
-                recipient_id_bytes = payload[28:44] # recipient_id está nos bytes 28 a 44
+            # Roteamento E2E (blind relay): se for frame E2E (>= MIN_E2E_FRAME_SIZE), encaminhar para o recipient_id
+            if len(payload) >= MIN_E2E_FRAME_SIZE:
+                recipient_id_bytes = payload[NONCE_SIZE + CLIENT_ID_SIZE : NONCE_SIZE + 2 * CLIENT_ID_SIZE]
                 recipient_id_str = format_client_id(recipient_id_bytes)
                 
                 async with sessions_lock:
@@ -60,10 +64,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         print(f"[Relay] Frame E2E encaminhado de {client_id_str} para {recipient_id_str} ({len(payload)} bytes)")
                     else:
                         print(f"[Relay] Destinatário {recipient_id_str} não encontrado.")
-            else:
-                # Devolve o mesmo payload recebido para o cliente (eco de teste)
-                await send_frame(writer, payload)
-
+                        
     except asyncio.IncompleteReadError:
         print(f"Conexão fechada pelo cliente {client_id_str or peername}.")
     except (ValueError, Exception) as e:
@@ -75,7 +76,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     del sessions[client_id_str]
                 
                 # Notificar pares restantes sobre a saída deste cliente (mensagem administrativa de saída)
-                leave_frame = client_id_bytes + b"\x00" * 32
+                leave_frame = client_id_bytes + b"\x00" * X25519_KEY_SIZE
                 for other_id_str, other_data in sessions.items():
                     try:
                         await send_frame(other_data['writer'], leave_frame)
@@ -90,13 +91,13 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
 async def registration(reader, writer):
     """Função responsável por registrar o cliente, executar o handshake e armazenar sessão."""
-    # Primeiro frame -> registro: client_id (16B) + pk (32B) = 48B
+    # Primeiro frame -> registro: client_id (16B) + pk (32B) = REGISTRATION_FRAME_SIZE
     registration_frame = await recv_frame(reader)
-    if len(registration_frame) != 48:
+    if len(registration_frame) != REGISTRATION_FRAME_SIZE:
         raise ValueError("Frame de registro inválido")
 
-    client_id_bytes = registration_frame[:16]
-    pk_c_bytes = registration_frame[16:]
+    client_id_bytes = registration_frame[:CLIENT_ID_SIZE]
+    pk_c_bytes = registration_frame[CLIENT_ID_SIZE:]
 
     client_id_str = format_client_id(client_id_bytes)
     pk_c = deserialize_public_key(pk_c_bytes)
@@ -106,8 +107,6 @@ async def registration(reader, writer):
 
     await send_frame(writer, handshake_response)
     print(f"Handshake realizado com sucesso para o cliente {client_id_str} (salt gerado)")
-
-#---
 
     async with sessions_lock:
         # Enviar contagem de clientes online para que o cliente possa esperar x respostas

@@ -18,6 +18,7 @@ from protocol.crypto import (
     encrypt_e2e_message,
     validate_and_decrypt_frame,
 )
+from protocol.spec import PEER_LEAVE_PUBLIC_KEY
 
 class PeerData(TypedDict):
     public_key_b: X25519PublicKey
@@ -80,10 +81,8 @@ async def main():
         await writer.wait_closed()
         return
 
-    history: dict[str, list[tuple[str, str]]] = {}
-    receiver = asyncio.create_task(
-        receive_messages(reader, peers, client_id, sk_a, history)
-    )
+    history: dict[str, list[tuple[str, str]]] = {} # Histórico de mensagens por peer. id_remetente -> [(id_destinatario, message), ...]
+    receiver = asyncio.create_task(receive_messages(reader, peers, client_id, sk_a, history)) # Tarefa assíncrona para receber mensagens de forma contínua 
     try:
         await terminal_chat(writer, peers, client_id, history)
     except KeyboardInterrupt:
@@ -129,6 +128,35 @@ def add_peer(
         "IV_base_send": iv_base_send,
         "IV_base_recv": None, # Aprende o IV base a partir do primeiro frame recebido
     }
+
+
+async def send_chat_message(
+    writer: asyncio.StreamWriter,
+    peers: dict[str, PeerData],
+    client_id: bytes,
+    id_b: str,
+    message: str,
+    history: dict[str, list[tuple[str, str]]],
+) -> None:
+    peer = peers.get(id_b)
+    if peer is None:
+        raise ValueError(f"{id_b} não está mais online")
+
+    frame, next_seq = encrypt_e2e_message(
+        sender_id=client_id,
+        recipient_id=UUID(id_b).bytes,
+        plaintext=message.encode("utf-8"),
+        key_send=peer["key_send"],
+        iv_base_send=peer["IV_base_send"],
+        seq_send=peer["seq_send"],
+    )
+    
+    await send_frame(writer, frame)
+    
+    peer["seq_send"] = next_seq
+    
+    history.setdefault(id_b, []).append((format_client_id(client_id), message))
+
     
 async def receive_messages(
     reader: asyncio.StreamReader,
@@ -338,33 +366,6 @@ def _add_line(screen, row: int, text: str, width: int) -> None:
         screen.addnstr(row, 0, text, max(0, width - 1))
     except curses.error:
         pass
-
-
-async def send_chat_message(
-    writer: asyncio.StreamWriter,
-    peers: dict[str, PeerData],
-    client_id: bytes,
-    recipient_id: str,
-    message: str,
-    history: dict[str, list[tuple[str, str]]],
-) -> None:
-    peer = peers.get(recipient_id)
-    if peer is None:
-        raise ValueError(f"{recipient_id} não está mais online")
-
-    frame, next_seq = encrypt_e2e_message(
-        sender_id=client_id,
-        recipient_id=UUID(recipient_id).bytes,
-        plaintext=message.encode("utf-8"),
-        key_send=peer["key_send"],
-        iv_base_send=peer["IV_base_send"],
-        seq_send=peer["seq_send"],
-    )
-    await send_frame(writer, frame)
-    peer["seq_send"] = next_seq
-    history.setdefault(recipient_id, []).append(
-        (format_client_id(client_id), message)
-    )
 
 if __name__ == "__main__":
     asyncio.run(main())

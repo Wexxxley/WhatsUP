@@ -1,6 +1,5 @@
 import asyncio
-
-MAX_FRAME_SIZE = 4200
+from protocol.spec import MAX_FRAME_SIZE
 
 async def send_frame(writer: asyncio.StreamWriter, payload: bytes):
     """ Empacota e envia um payload através do canal de escrita (writer).

@@ -5,8 +5,13 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from protocol.keys import deserialize_public_key
 from protocol.ids import format_client_id
-
-MAX_PLAINTEXT_SIZE = 4096
+from protocol.spec import (
+    MAX_PLAINTEXT_SIZE,
+    MIN_E2E_FRAME_SIZE,
+    NONCE_SIZE,
+    CLIENT_ID_SIZE,
+    SEQUENCE_SIZE
+)
 
 def derive_e2e_keys(
     sk_a: X25519PrivateKey,
@@ -72,7 +77,7 @@ def encrypt_e2e_message(
     if len(plaintext) > MAX_PLAINTEXT_SIZE:
         raise ValueError(f"Plaintext excede o limite máximo de {MAX_PLAINTEXT_SIZE} bytes")
 
-    seq_bytes = seq_send.to_bytes(8, 'big')
+    seq_bytes = seq_send.to_bytes(SEQUENCE_SIZE, 'big')
     nonce = iv_base_send + seq_bytes
     aad = sender_id + recipient_id + seq_bytes
 
@@ -95,15 +100,14 @@ def decrypt_e2e_message(
     Valida tamanho mínimo, IV_base (congelado após o primeiro frame) e tag GCM (que protege AAD e ciphertext).
     Retorna (sender_id, plaintext, iv_base, seq_no, updated_iv_base_recv).
     """
-    MIN_FRAME_SIZE = 12 + 16 + 16 + 8 + 16 # nonce + sender + recipient + seq + tag(16)
-    if len(frame) < MIN_FRAME_SIZE:
+    if len(frame) < MIN_E2E_FRAME_SIZE:
         raise ValueError("Frame E2E muito curto")
 
-    nonce = frame[:12]
-    sender_id = frame[12:28]
-    recipient_id = frame[28:44]
-    seq_bytes = frame[44:52]
-    ciphertext_with_tag = frame[52:]
+    nonce = frame[:NONCE_SIZE]
+    sender_id = frame[NONCE_SIZE:NONCE_SIZE + CLIENT_ID_SIZE]
+    recipient_id = frame[NONCE_SIZE + CLIENT_ID_SIZE:NONCE_SIZE + 2 * CLIENT_ID_SIZE]
+    seq_bytes = frame[NONCE_SIZE + 2 * CLIENT_ID_SIZE:NONCE_SIZE + 2 * CLIENT_ID_SIZE + SEQUENCE_SIZE]
+    ciphertext_with_tag = frame[NONCE_SIZE + 2 * CLIENT_ID_SIZE + SEQUENCE_SIZE:]
 
     iv_base = nonce[:4]
     seq_no = int.from_bytes(seq_bytes, 'big')
@@ -133,13 +137,12 @@ def validate_and_decrypt_frame(
     Valida e decifra um frame E2E aplicando anti-replay (seq_no > seq_recv)
     e ordem correta de verificação (seq -> decifragem/tag -> atualiza seq_recv).
     """
-    MIN_FRAME_SIZE = 12 + 16 + 16 + 8 + 16
-    if len(frame) < MIN_FRAME_SIZE:
+    if len(frame) < MIN_E2E_FRAME_SIZE:
         raise ValueError("bad framing: frame muito curto")
 
-    sender_id = frame[12:28]
-    recipient_id = frame[28:44]
-    seq_bytes = frame[44:52]
+    sender_id = frame[NONCE_SIZE:NONCE_SIZE + CLIENT_ID_SIZE]
+    recipient_id = frame[NONCE_SIZE + CLIENT_ID_SIZE:NONCE_SIZE + 2 * CLIENT_ID_SIZE]
+    seq_bytes = frame[NONCE_SIZE + 2 * CLIENT_ID_SIZE:NONCE_SIZE + 2 * CLIENT_ID_SIZE + SEQUENCE_SIZE]
     
     sender_id_str = format_client_id(sender_id)
 
