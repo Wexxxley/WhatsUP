@@ -1,5 +1,6 @@
 import asyncio
 from typing import TypedDict
+from cryptography.hazmat.primitives.asymmetric import rsa as rsa_types
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 from protocol.framing import send_frame, recv_frame
 from protocol.ids import format_client_id
@@ -8,6 +9,7 @@ from protocol.handshake import (
     load_server_private_key,
     create_server_handshake_response
 )
+from tools.generate_certificate import ensure_server_certificate
 from protocol.spec import (
     MIN_E2E_FRAME_SIZE,
     REGISTRATION_FRAME_SIZE,
@@ -28,9 +30,8 @@ class SessionData(TypedDict):
 sessions_lock = asyncio.Lock() # serve para garantir a concorrência segura (thread-safe) e fila de espera
 sessions: dict[str, SessionData] = {}
 
-SERVER_PRIV_KEY = load_server_private_key()
-with open("certs/server.crt", "rb") as f:
-    SERVER_CERT_BYTES = f.read()
+SERVER_PRIV_KEY: rsa_types.RSAPrivateKey | None = None
+SERVER_CERT_BYTES: bytes | None = None
 
 # ---------------------------------------------------------------------------------
 
@@ -90,6 +91,9 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
 async def registration(reader, writer):
     """Função responsável por registrar o cliente, executar o handshake e armazenar sessão."""
+    if SERVER_PRIV_KEY is None or SERVER_CERT_BYTES is None:
+        raise RuntimeError("Credenciais do servidor não foram carregadas")
+
     # Primeiro frame -> registro: client_id (16B) + pk (32B) = REGISTRATION_FRAME_SIZE
     registration_frame = await recv_frame(reader)
     if len(registration_frame) != REGISTRATION_FRAME_SIZE:
@@ -136,6 +140,12 @@ async def registration(reader, writer):
 
 async def main():
     """Função principal do servidor responsável por inicializar o listener TCP."""
+    global SERVER_PRIV_KEY, SERVER_CERT_BYTES
+
+    ensure_server_certificate()
+    SERVER_PRIV_KEY = load_server_private_key()
+    with open("certs/server.crt", "rb") as f:
+        SERVER_CERT_BYTES = f.read()
 
     # Inicializa o servidor TCP, passagem de handle_client como callback para cada nova conexão
     server = await asyncio.start_server(handle_client, '127.0.0.1', 8888)

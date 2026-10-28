@@ -69,7 +69,9 @@ python3 -m pip install cryptography
 
 ### Certificado do servidor
 
-Se necessário, gere o par RSA e o certificado autoassinado:
+Ao iniciar, o servidor verifica se `certs/server.key` e `certs/server.crt`
+existem. Se faltar qualquer um, gera um novo par RSA e certificado autoassinado.
+Também é possível gerá-los manualmente:
 
 ```bash
 python3 tools/generate_certificate.py
@@ -78,6 +80,8 @@ python3 tools/generate_certificate.py
 O certificado `certs/server.crt` precisa estar disponível no cliente para a
 verificação por pinning. A chave privada `certs/server.key` deve permanecer
 protegida e nunca deve ser distribuída aos clientes.
+Se apenas um dos arquivos estiver presente, o servidor gera um novo par
+completo; como o certificado muda, os clientes precisam atualizar o pin.
 
 ### Iniciar o servidor e os clientes
 
@@ -159,11 +163,12 @@ Quando a especificação do PDF e a implementação diferem, a diferença é ind
 
 ### Preparação do servidor
 
-O certificado autoassinado e o par RSA são preparados antes de iniciar o
-servidor, usando `tools/generate_certificate.py` quando necessário. Ao iniciar,
-o servidor carrega `certs/server.key` e `certs/server.crt`; não gera um novo par
-RSA para cada cliente. O certificado público correspondente precisa estar
-pinado no cliente.
+Ao iniciar, o servidor verifica se `certs/server.key` e `certs/server.crt`
+existem. Se um dos arquivos estiver ausente, gera um novo par e carrega as
+credenciais antes de abrir o listener; não gera um novo par RSA para cada
+cliente. O certificado público correspondente precisa estar pinado no cliente.
+Se o par foi regenerado porque um dos arquivos faltava, atualize também o
+certificado pinado pelos clientes.
 
 ### Fase 1 — Inicialização e registro do cliente
 
