@@ -16,6 +16,7 @@ def generate_server_certificate():
     )
     
     # 2. Gerar certificado autoassinado
+    #Subject (assunto, no caso o servidor) e Issuer (emissor do certificado) são os mesmos, pois é autoassinado
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, u"tp3-server"),
     ])

@@ -115,7 +115,7 @@ class TestClientPeerRegistration(unittest.TestCase):
         self.assertEqual(len(writer.frames), 2)
         self.assertEqual(peers[peer_id_str]["seq_send"], 2)
         self.assertEqual(
-            [message for _, message in history[peer_id_str]],
+            [entry["message"] for entry in history[peer_id_str]],
             ["Oi", "Tudo bem?"]
         )
 
@@ -159,10 +159,10 @@ class TestClientPeerRegistration(unittest.TestCase):
             patch("client.curses.endwin"),
             patch("client.locale.setlocale"),
         ):
-            asyncio.run(terminal_chat(writer, peers, client_id, history))
+            asyncio.run(terminal_chat(writer, client_id, peers, history))
 
         self.assertEqual(len(writer.frames), 1)
-        self.assertEqual(history[peer_id_str][0][1], "hi")
+        self.assertEqual(history[peer_id_str][0]["message"], "hi")
         self.assertTrue(any("Você: hi" in frame for frame in screen.frames))
 
 

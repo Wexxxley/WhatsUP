@@ -14,7 +14,6 @@ from protocol.spec import (
     CLIENT_ID_SIZE,
     X25519_KEY_SIZE,
     NONCE_SIZE,
-    PEER_LEAVE_PUBLIC_KEY
 )
 
 class SessionData(TypedDict):
