@@ -2,5 +2,5 @@ venv/
 __pycache__/
 server.key
 *.log
-certs/
-estudos/
+server.crt
+server.key
