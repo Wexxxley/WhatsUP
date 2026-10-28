@@ -267,3 +267,28 @@ No protocolo, seq_send e seq_recv são contadores mntidos pelo SERVER essenciais
    2. A troca (.exchange):
       * Segredo_A = sk_A · (sk_B · G)
       * Segredo_B = sk_B · (sk_A · G)
+
+
+---
+
+
+### Estado que A mantém para B
+
+| Ação | `seq_send` de A para B | `seq_recv` recebido de B |
+|---|---:|---:|
+| A adiciona B | 0 | -1 |
+| A envia mensagem `0` | 1 | -1 |
+| A recebe mensagem `0` de B | 1 | 0 |
+| A envia mensagem `1` | 2 | 0 |
+| A recebe mensagem `1` de B | 2 | 1 |
+
+### Estado que B mantém para A
+
+| Ação | `seq_send` de B para A | `seq_recv` recebido de A |
+|---|---:|---:|
+| B adiciona A | 0 | -1 |
+| B recebe mensagem `0` de A | 0 | 0 |
+| B envia mensagem `0` | 1 | 0 |
+| B recebe mensagem `1` de A | 1 | 1 |
+| B envia mensagem `1` | 2 | 1 |
+

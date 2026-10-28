@@ -5,7 +5,10 @@ import locale
 import textwrap
 from uuid import UUID
 from typing import TypedDict
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey,
+    X25519PublicKey,
+)
 from protocol.framing import send_frame, recv_frame
 from protocol.ids import generate_client_id, format_client_id
 from protocol.keys import generate_key_pair, serialize_public_key
@@ -23,7 +26,7 @@ from protocol.spec import (
 )
 
 class PeerData(TypedDict):
-    public_key_b: X25519PrivateKey
+    public_key_b: X25519PublicKey
     key_send: bytes
     key_recv: bytes
     seq_send: int
@@ -119,14 +122,23 @@ async def add_peer(
     client_id: bytes,
     sk_a: X25519PrivateKey,
 ) -> None:
-    """Adiciona um novo peer à lista de contatos informada."""
+    """Adiciona um peer novo, ignora anúncios repetidos e rejeita troca de chave."""
     pair_salt = hashlib.sha256(b"WhatsUp E2E" + min(client_id, peer_id_bytes) + max(client_id, peer_id_bytes)).digest()
-    
     key_send, key_recv, iv_base_send = derive_e2e_keys(sk_a, peer_pk_bytes, client_id, peer_id_bytes, pair_salt)
-    
+    public_key_b = deserialize_public_key(peer_pk_bytes)
+
     async with client_lock:
+        existing_peer = peers.get(peer_id_str)
+        if existing_peer is not None:
+            existing_public_key_bytes = serialize_public_key(existing_peer["public_key_b"])
+            if existing_public_key_bytes != peer_pk_bytes:
+                raise ValueError(
+                    f"A chave pública anunciada para {peer_id_str} mudou durante a sessão"
+                )
+            return
+
         peers[peer_id_str] = {
-            "public_key_b": deserialize_public_key(peer_pk_bytes),
+            "public_key_b": public_key_b,
             "key_send": key_send,
             "key_recv": key_recv,
             "seq_send": 0,
@@ -187,63 +199,40 @@ async def receive_messages(
                 )
             return
 
-        # Entrada ou saída de peer
-        # id_b 16B + pk_b 32B
+        # Se for framde saida/entrada de peer. [ID 16B] + [pk_b 32B].
         if len(payload) == REGISTRATION_FRAME_SIZE:
             peer_id_bytes = payload[:16]
             peer_id_str = format_client_id(peer_id_bytes)
             peer_pk_bytes = payload[16:]
 
-            # Se o server enviou a pk especial significa que o peer saiu da rede.
+            ## Se for a chave especial de saída, remove o peer do dicionário e registra a saída no histórico.
             if peer_pk_bytes == PEER_LEAVE_PUBLIC_KEY:
                 async with client_lock:
-                    # Só anuncia a saída se esse peer estava na lista local.
-                    if peers.pop(peer_id_str, None) is not None:
+                    if peers.get(peer_id_str) is not None:
+                        peers.pop(peer_id_str)
                         history.setdefault("*", []).append({"sender": "*", "message": f"{peer_id_str} saiu."})
-                continue
-
+            else:
+                # Se for um anúncio de peer, tenta adicioná-lo.
+                try:
+                    await add_peer(peer_id_str, peer_id_bytes, peer_pk_bytes, id_a, sk_a)
+                except ValueError as e:
+                    async with client_lock:
+                        history.setdefault("*", []).append({"sender": "*", "message": f"Falha ao adicionar {peer_id_str}: {e}"})
+        # Se não for anúncio de peer e for menor que 68 bytes, é um frame inválido.
+        elif len(payload) < MIN_E2E_FRAME_SIZE:
+            async with client_lock:
+                history.setdefault("*", []).append( {"sender": "*", "message": f"Frame inesperado recebido ({len(payload)} bytes)."})
+        # Só frames E2E (68 bytes ou mais) chegam à validação criptográfica.
+        else:
             try:
-                # Deriva as chaves da sessão E2E e adiciona/atualiza o peer.
-                await add_peer(peer_id_str, peer_id_bytes, peer_pk_bytes, id_a, sk_a)
-            except ValueError as e:
-                # Falhas nos dados/chaves do peer são mostradas no histórico
-                # geral, sem encerrar a recepção de frames futuros.
                 async with client_lock:
-                    history.setdefault("*", []).append(
-                        {"sender": "*", "message": f"Falha ao adicionar {peer_id_str}: {e}"}
-                    )
-            continue
-
-        # Qualquer frame que não seja de registro precisa ter, no mínimo, o
-        # tamanho definido para conter os campos obrigatórios de uma mensagem E2E.
-        if len(payload) < MIN_E2E_FRAME_SIZE:
-            # Um frame curto não pode ser validado/decifrado; registra o tamanho
-            # recebido para facilitar o diagnóstico e aguarda o próximo frame.
-            async with client_lock:
-                history.setdefault("*", []).append(
-                    {"sender": "*", "message": f"Frame inesperado recebido ({len(payload)} bytes)."}
-                )
-            continue
-
-        try:
-            # Valida o frame, verifica remetente/destinatário e anti-replay, e
-            # decifra a mensagem usando as chaves associadas ao peer.
-            async with client_lock:
-                sender_id, plaintext = validate_and_decrypt_frame(
-                    payload, id_a, peers
-                )
-                # Converte os bytes da mensagem em texto. Caracteres inválidos
-                # são substituídos para que não impeçam a exibição da conversa.
-                message = plaintext.decode("utf-8", errors="replace")
-                # Cada conversa é indexada pelo ID textual do remetente.
-                history.setdefault(sender_id, []).append({"sender": sender_id, "message": message})
-        except ValueError as e:
-            # Frames inválidos (por exemplo, remetente desconhecido ou replay)
-            # não encerram o loop; o erro aparece como aviso no histórico geral.
-            async with client_lock:
-                history.setdefault("*", []).append(
-                    {"sender": "*", "message": f"Mensagem recebida inválida: {e}"}
-                )
+                    (id_b, plaintext) = validate_and_decrypt_frame(payload, id_a, peers)
+                    message = plaintext.decode("utf-8", errors="replace")
+                    history.setdefault(id_b, []).append({"sender": id_b, "message": message})
+            except ValueError as e:
+                # Mensagem E2E inválida 
+                async with client_lock:
+                    history.setdefault("*", []).append( {"sender": "*", "message": f"Mensagem recebida inválida: {e}"})
 
 
 async def terminal_chat(

@@ -93,13 +93,13 @@ def decrypt_e2e_message(
     frame: bytes,
     key_recv: bytes,
     expected_recipient_id: bytes,
-    expected_iv_base_recv: bytes | None
+    expected_iv_base_recv: bytes | None # Na primeira msg passa none, nas demais, passa a recebida pela msg anterior
 ) -> tuple[bytes, bytes, bytes, int, bytes]:
     """
-    Decifra um frame E2E usando AES-128-GCM.
-    Valida tamanho mínimo, IV_base (congelado após o primeiro frame) e tag GCM (que protege AAD e ciphertext).
-    Retorna (sender_id, plaintext, iv_base, seq_no, updated_iv_base_recv).
+    Decifra um frame E2E usando AES-128-GCM, valida,
+    retorna (sender_id, plaintext, iv_base, seq_no, updated_iv_base_recv).
     """
+    
     if len(frame) < MIN_E2E_FRAME_SIZE:
         raise ValueError("Frame E2E muito curto")
 
@@ -109,24 +109,23 @@ def decrypt_e2e_message(
     seq_bytes = frame[NONCE_SIZE + 2 * CLIENT_ID_SIZE:NONCE_SIZE + 2 * CLIENT_ID_SIZE + SEQUENCE_SIZE]
     ciphertext_with_tag = frame[NONCE_SIZE + 2 * CLIENT_ID_SIZE + SEQUENCE_SIZE:]
 
-    iv_base = nonce[:4]
-    seq_no = int.from_bytes(seq_bytes, 'big')
+    iv_base_b = nonce[:4]
+    seq_no_b = int.from_bytes(seq_bytes, 'big')
 
     if expected_iv_base_recv is None:
-        expected_iv_base_recv = iv_base
-    elif iv_base != expected_iv_base_recv:
+        expected_iv_base_recv = iv_base_b
+    elif iv_base_b != expected_iv_base_recv:
         raise ValueError("IV base do nonce mudou no meio da sessão (violação de segurança)")
 
     aad = sender_id + recipient_id + seq_bytes
 
-    # AAD inclui recipient_id, sender_id e seq_no. Qualquer adulteração causará InvalidTag.
     aesgcm = AESGCM(key_recv)
     plaintext = aesgcm.decrypt(nonce, ciphertext_with_tag, aad)
 
     if recipient_id != expected_recipient_id:
         raise ValueError("Recipient ID do frame não confere com o ID esperado")
 
-    return sender_id, plaintext, iv_base, seq_no, expected_iv_base_recv
+    return sender_id, plaintext, iv_base_b, seq_no_b, expected_iv_base_recv
 
 def validate_and_decrypt_frame(
     frame: bytes,
@@ -135,29 +134,28 @@ def validate_and_decrypt_frame(
 ) -> tuple[str, bytes]:
     """
     Valida e decifra um frame E2E aplicando anti-replay (seq_no > seq_recv)
-    e ordem correta de verificação (seq -> decifragem/tag -> atualiza seq_recv).
     """
     if len(frame) < MIN_E2E_FRAME_SIZE:
         raise ValueError("bad framing: frame muito curto")
 
-    sender_id = frame[NONCE_SIZE:NONCE_SIZE + CLIENT_ID_SIZE]
-    recipient_id = frame[NONCE_SIZE + CLIENT_ID_SIZE:NONCE_SIZE + 2 * CLIENT_ID_SIZE]
-    seq_bytes = frame[NONCE_SIZE + 2 * CLIENT_ID_SIZE:NONCE_SIZE + 2 * CLIENT_ID_SIZE + SEQUENCE_SIZE]
+    id_b = frame[NONCE_SIZE:NONCE_SIZE + CLIENT_ID_SIZE]
+    target_id = frame[NONCE_SIZE + CLIENT_ID_SIZE:NONCE_SIZE + 2 * CLIENT_ID_SIZE]
+    seq_bytes_b = frame[NONCE_SIZE + 2 * CLIENT_ID_SIZE:NONCE_SIZE + 2 * CLIENT_ID_SIZE + SEQUENCE_SIZE]
     
-    sender_id_str = format_client_id(sender_id)
+    sender_id_str = format_client_id(id_b)
 
     if sender_id_str not in peers:
         raise ValueError(f"Remetente desconhecido: {sender_id_str}")
-
+    
     peer = peers[sender_id_str]
-    seq_no = int.from_bytes(seq_bytes, 'big')
+    seq_no_b = int.from_bytes(seq_bytes_b, 'big')
 
-    # 1. Validação anti-replay: aceitar apenas seq_no > seq_recv
-    if seq_no <= peer["seq_recv"]:
-        print(f"[LOG] replay rejected: peer={sender_id_str}, seq_received={seq_no}, seq_recv={peer['seq_recv']}")
+    # Validação anti-replay e lacunas
+    if seq_no_b != peer["seq_recv"] + 1:
+        print(f"[LOG] replay rejected: peer={sender_id_str}, seq_received={seq_no_b}, seq_recv={peer['seq_recv']}")
         raise ValueError("replay rejected")
 
-    # 2. Decifragem e validação da tag GCM (autenticidade e integridade)
+    # Decifragem e validação da tag com AESGCM
     try:
         _, plaintext, _, _, updated_iv_base = decrypt_e2e_message(
             frame=frame,
@@ -167,10 +165,8 @@ def validate_and_decrypt_frame(
         )
         peer["IV_base_recv"] = updated_iv_base
     except Exception as e:
-        print(f"[LOG] tag mismatch / decrypion error: peer={sender_id_str}")
         raise ValueError("tag mismatch") from e
 
-    # 3. Atualizar seq_recv APÓS decifragem bem-sucedida
-    peer["seq_recv"] = seq_no
+    peer["seq_recv"] = seq_no_b
 
     return sender_id_str, plaintext

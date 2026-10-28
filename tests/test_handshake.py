@@ -36,6 +36,7 @@ class TestHandshake(unittest.TestCase):
         )
         
         self.assertEqual(verified_salt, salt_srv)
+        self.assertEqual(len(verified_salt), 16)
         print("Teste positivo de handshake passou!")
 
     def test_handshake_negative_signature_corruption(self):
@@ -98,6 +99,31 @@ class TestHandshake(unittest.TestCase):
                 client_id
             )
         print("Teste negativo de corrupção de salt passou!")
+
+    def test_handshake_signature_is_bound_to_client_key_and_id(self):
+        priv_key = load_server_private_key("certs/server.key")
+        with open("certs/server.crt", "rb") as f:
+            cert_bytes = f.read()
+
+        client_id = generate_client_id()
+        other_client_id = generate_client_id()
+        _, client_pk = generate_key_pair()
+        _, other_client_pk = generate_key_pair()
+        client_pk_bytes = serialize_public_key(client_pk)
+        other_client_pk_bytes = serialize_public_key(other_client_pk)
+        response, _ = create_server_handshake_response(
+            priv_key, cert_bytes, client_pk_bytes, client_id
+        )
+
+        with self.assertRaises(InvalidSignature):
+            verify_server_handshake_response(
+                response, "certs/server.crt", other_client_pk_bytes, client_id
+            )
+
+        with self.assertRaises(InvalidSignature):
+            verify_server_handshake_response(
+                response, "certs/server.crt", client_pk_bytes, other_client_id
+            )
 
 if __name__ == "__main__":
     unittest.main()
