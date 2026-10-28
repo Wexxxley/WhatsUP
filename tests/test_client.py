@@ -62,14 +62,16 @@ class TestClientPeerRegistration(unittest.TestCase):
         client_a_peer_id = format_client_id(client_b_id)
         client_b_peer_id = format_client_id(client_a_id)
 
-        add_peer(
-            peers_a, client_a_peer_id, client_b_id,
-            serialize_public_key(client_b_pk), client_a_id, client_a_sk
-        )
-        add_peer(
-            peers_b, client_b_peer_id, client_a_id,
-            serialize_public_key(client_a_pk), client_b_id, client_b_sk
-        )
+        with patch("client.peers", peers_a), patch("client.history", {}):
+            asyncio.run(add_peer(
+                client_a_peer_id, client_b_id,
+                serialize_public_key(client_b_pk), client_a_id, client_a_sk
+            ))
+        with patch("client.peers", peers_b), patch("client.history", {}):
+            asyncio.run(add_peer(
+                client_b_peer_id, client_a_id,
+                serialize_public_key(client_a_pk), client_b_id, client_b_sk
+            ))
 
         plaintext = b"Mensagem entre clientes"
         peer_a = peers_a[client_a_peer_id]
@@ -96,22 +98,22 @@ class TestClientPeerRegistration(unittest.TestCase):
         peer_sk, peer_pk = generate_key_pair()
         peer_id_str = format_client_id(peer_id)
         peers: dict[str, PeerData] = {}
-        add_peer(
-            peers, peer_id_str, peer_id, serialize_public_key(peer_pk),
-            client_id, sk
-        )
         writer = MemoryWriter()
         history = {}
 
         async def send_messages():
-            await send_chat_message(
-                writer, peers, client_id, peer_id_str, "Oi", history
+            await add_peer(
+                peer_id_str, peer_id, serialize_public_key(peer_pk), client_id, sk
             )
             await send_chat_message(
-                writer, peers, client_id, peer_id_str, "Tudo bem?", history
+                writer, client_id, peer_id_str, "Oi"
+            )
+            await send_chat_message(
+                writer, client_id, peer_id_str, "Tudo bem?"
             )
 
-        asyncio.run(send_messages())
+        with patch("client.peers", peers), patch("client.history", history):
+            asyncio.run(send_messages())
         self.assertEqual(len(writer.frames), 2)
         self.assertEqual(peers[peer_id_str]["seq_send"], 2)
         self.assertEqual(
@@ -120,10 +122,11 @@ class TestClientPeerRegistration(unittest.TestCase):
         )
 
         receiver_peers: dict[str, PeerData] = {}
-        add_peer(
-            receiver_peers, format_client_id(client_id), client_id,
-            serialize_public_key(client_pk), peer_id, peer_sk
-        )
+        with patch("client.peers", receiver_peers), patch("client.history", {}):
+            asyncio.run(add_peer(
+                format_client_id(client_id), client_id,
+                serialize_public_key(client_pk), peer_id, peer_sk
+            ))
         received_messages = []
         for framed_data in writer.frames:
             payload_size = int.from_bytes(framed_data[:4], "big")
@@ -142,15 +145,13 @@ class TestClientPeerRegistration(unittest.TestCase):
         peer_sk, peer_pk = generate_key_pair()
         peer_id_str = format_client_id(peer_id)
         peers: dict[str, PeerData] = {}
-        add_peer(
-            peers, peer_id_str, peer_id, serialize_public_key(peer_pk),
-            client_id, sk
-        )
         writer = MemoryWriter()
         history = {}
         screen = MemoryScreen(["\n", "h", "i", "\n", "\x1b", "q"])
 
         with (
+            patch("client.peers", peers),
+            patch("client.history", history),
             patch("client.curses.initscr", return_value=screen),
             patch("client.curses.noecho"),
             patch("client.curses.cbreak"),
@@ -159,7 +160,14 @@ class TestClientPeerRegistration(unittest.TestCase):
             patch("client.curses.endwin"),
             patch("client.locale.setlocale"),
         ):
-            asyncio.run(terminal_chat(writer, client_id, peers, history))
+            async def run_chat():
+                await add_peer(
+                    peer_id_str, peer_id, serialize_public_key(peer_pk),
+                    client_id, sk
+                )
+                await terminal_chat(writer, client_id)
+
+            asyncio.run(run_chat())
 
         self.assertEqual(len(writer.frames), 1)
         self.assertEqual(history[peer_id_str][0]["message"], "hi")

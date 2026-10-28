@@ -35,9 +35,10 @@ class MessageEntry(TypedDict):
     sender: str
     message: str
 
-client_lock = asyncio.Lock()
 peers: dict[str, PeerData] = {}
 history: dict[str, list[MessageEntry]] = {} # Histórico de mensagens por peer. A lista de um chat específico armazena tanto as que você enviou quanto as que você recebeu daquele
+
+client_lock = asyncio.Lock()
 
 
 async def main():
@@ -85,11 +86,9 @@ async def main():
             peer_pk_bytes = peer_frame[16:]
             peer_id_str = format_client_id(peer_client_id_bytes)
 
-            async with client_lock:
-                add_peer(
-                    peers, peer_id_str, peer_client_id_bytes, peer_pk_bytes,
-                    id_a, sk_a
-                )
+            await add_peer(
+                peer_id_str, peer_client_id_bytes, peer_pk_bytes, id_a, sk_a
+            )
             print(f"Peer online: {peer_id_str}")
 
     except Exception as e:
@@ -113,8 +112,7 @@ async def main():
         await writer.wait_closed()
 
 
-def add_peer(
-    target_peers: dict[str, PeerData],
+async def add_peer(
     peer_id_str: str,
     peer_id_bytes: bytes,
     peer_pk_bytes: bytes,
@@ -126,48 +124,31 @@ def add_peer(
     
     key_send, key_recv, iv_base_send = derive_e2e_keys(sk_a, peer_pk_bytes, client_id, peer_id_bytes, pair_salt)
     
-    target_peers[peer_id_str] = {
-        "public_key_b": deserialize_public_key(peer_pk_bytes),
-        "key_send": key_send,
-        "key_recv": key_recv,
-        "seq_send": 0,
-        "seq_recv": -1,
-        "IV_base_send": iv_base_send,
-        "IV_base_recv": None,
-    }
+    async with client_lock:
+        peers[peer_id_str] = {
+            "public_key_b": deserialize_public_key(peer_pk_bytes),
+            "key_send": key_send,
+            "key_recv": key_recv,
+            "seq_send": 0,
+            "seq_recv": -1,
+            "IV_base_send": iv_base_send,
+            "IV_base_recv": None,
+        }
 
 
 async def send_chat_message(
     writer: asyncio.StreamWriter,
-    target_peers_or_sender_id: dict[str, PeerData] | bytes,
-    sender_id_or_recipient_id: bytes | str,
-    recipient_id_or_message: bytes | str,
-    message_or_peers: str | dict[str, PeerData] | None = None,
-    history_dict: dict[str, list[MessageEntry]] | None = None,
+    sender_id: bytes,
+    recipient_id: str,
+    message_text: str,
 ) -> None:
     """Cifra e envia uma mensagem E2E para um peer conhecido."""
-    if isinstance(target_peers_or_sender_id, dict):
-        target_peers = target_peers_or_sender_id
-        sender_id = sender_id_or_recipient_id
-        recipient_id = recipient_id_or_message
-        message_text = message_or_peers
-        target_history = history_dict if history_dict is not None else history
-    else:
-        sender_id = target_peers_or_sender_id
-        recipient_id = sender_id_or_recipient_id
-        message_text = recipient_id_or_message
-        target_peers = message_or_peers if isinstance(message_or_peers, dict) else peers
-        target_history = history_dict if history_dict is not None else history
-
-    if not isinstance(message_text, str):
-        raise ValueError("Mensagem não informada")
-
-    sender_id_bytes = sender_id if isinstance(sender_id, bytes) else UUID(str(sender_id)).bytes
-    recipient_id_bytes = recipient_id if isinstance(recipient_id, bytes) else UUID(str(recipient_id)).bytes
+    sender_id_bytes = sender_id
+    recipient_id_bytes = UUID(recipient_id).bytes
     recipient_id_str = format_client_id(recipient_id_bytes)
 
     async with client_lock:
-        peer = target_peers.get(recipient_id_str)
+        peer = peers.get(recipient_id_str)
         if peer is None:
             raise ValueError(f"{recipient_id_str} não está mais online")
 
@@ -182,7 +163,7 @@ async def send_chat_message(
 
         await send_frame(writer, frame)
         peer["seq_send"] = next_seq
-        target_history.setdefault(recipient_id_str, []).append({
+        history.setdefault(recipient_id_str, []).append({
             "sender": format_client_id(sender_id_bytes),
             "message": message_text,
         })
@@ -192,63 +173,75 @@ async def receive_messages(
     reader: asyncio.StreamReader,
     id_a: bytes,
     sk_a: X25519PrivateKey,
-    peers_dict: dict[str, PeerData] | None = None,
-    history_dict: dict[str, list[MessageEntry]] | None = None,
 ) -> None:
-    target_peers = peers_dict if peers_dict is not None else peers
-    target_history = history_dict if history_dict is not None else history
+    """Recebe frames do servidor e atualiza peers e histórico de mensagens."""
 
     while True:
         try:
             payload = await recv_frame(reader)
         except asyncio.IncompleteReadError:
+            # O servidor encerrou a conexão ou não terminou de enviar o frame. Registra o encerramento
             async with client_lock:
-                target_history.setdefault("*", []).append(
+                history.setdefault("*", []).append(
                     {"sender": "*", "message": "Conexão encerrada pelo servidor."}
                 )
             return
 
+        # Entrada ou saída de peer
+        # id_b 16B + pk_b 32B
         if len(payload) == REGISTRATION_FRAME_SIZE:
             peer_id_bytes = payload[:16]
             peer_id_str = format_client_id(peer_id_bytes)
             peer_pk_bytes = payload[16:]
 
-            async with client_lock:
-                if peer_pk_bytes == PEER_LEAVE_PUBLIC_KEY:
-                    if target_peers.pop(peer_id_str, None) is not None:
-                        target_history.setdefault("*", []).append(
-                            {"sender": "*", "message": f"{peer_id_str} saiu."}
-                        )
-                    continue
+            # Se o server enviou a pk especial significa que o peer saiu da rede.
+            if peer_pk_bytes == PEER_LEAVE_PUBLIC_KEY:
+                async with client_lock:
+                    # Só anuncia a saída se esse peer estava na lista local.
+                    if peers.pop(peer_id_str, None) is not None:
+                        history.setdefault("*", []).append({"sender": "*", "message": f"{peer_id_str} saiu."})
+                continue
 
-                try:
-                    add_peer(
-                        target_peers, peer_id_str, peer_id_bytes, peer_pk_bytes,
-                        id_a, sk_a
-                    )
-                except ValueError as e:
-                    target_history.setdefault("*", []).append(
+            try:
+                # Deriva as chaves da sessão E2E e adiciona/atualiza o peer.
+                await add_peer(peer_id_str, peer_id_bytes, peer_pk_bytes, id_a, sk_a)
+            except ValueError as e:
+                # Falhas nos dados/chaves do peer são mostradas no histórico
+                # geral, sem encerrar a recepção de frames futuros.
+                async with client_lock:
+                    history.setdefault("*", []).append(
                         {"sender": "*", "message": f"Falha ao adicionar {peer_id_str}: {e}"}
                     )
             continue
 
+        # Qualquer frame que não seja de registro precisa ter, no mínimo, o
+        # tamanho definido para conter os campos obrigatórios de uma mensagem E2E.
         if len(payload) < MIN_E2E_FRAME_SIZE:
+            # Um frame curto não pode ser validado/decifrado; registra o tamanho
+            # recebido para facilitar o diagnóstico e aguarda o próximo frame.
             async with client_lock:
-                target_history.setdefault("*", []).append(
+                history.setdefault("*", []).append(
                     {"sender": "*", "message": f"Frame inesperado recebido ({len(payload)} bytes)."}
                 )
             continue
 
         try:
+            # Valida o frame, verifica remetente/destinatário e anti-replay, e
+            # decifra a mensagem usando as chaves associadas ao peer.
             async with client_lock:
                 sender_id, plaintext = validate_and_decrypt_frame(
-                    payload, id_a, target_peers
+                    payload, id_a, peers
                 )
+                # Converte os bytes da mensagem em texto. Caracteres inválidos
+                # são substituídos para que não impeçam a exibição da conversa.
                 message = plaintext.decode("utf-8", errors="replace")
-                target_history.setdefault(sender_id, []).append({"sender": sender_id, "message": message})
+                # Cada conversa é indexada pelo ID textual do remetente.
+                history.setdefault(sender_id, []).append({"sender": sender_id, "message": message})
         except ValueError as e:
+            # Frames inválidos (por exemplo, remetente desconhecido ou replay)
+            # não encerram o loop; o erro aparece como aviso no histórico geral.
             async with client_lock:
-                target_history.setdefault("*", []).append(
+                history.setdefault("*", []).append(
                     {"sender": "*", "message": f"Mensagem recebida inválida: {e}"}
                 )
 
@@ -256,12 +249,8 @@ async def receive_messages(
 async def terminal_chat(
     writer: asyncio.StreamWriter,
     client_id: bytes,
-    target_peers: dict[str, PeerData] | None = None,
-    target_history: dict[str, list[MessageEntry]] | None = None,
 ) -> None:
     """Executa o loop de chat no terminal."""
-    target_peers = target_peers if target_peers is not None else peers
-    target_history = target_history if target_history is not None else history
 
     locale.setlocale(locale.LC_ALL, "")
     screen = curses.initscr()
@@ -278,20 +267,25 @@ async def terminal_chat(
     try:
         while True:
             async with client_lock:
-                peer_ids = sorted(target_peers)
+                peer_ids = sorted(peers)
                 if peer_ids:
                     selected_peer = min(selected_peer, len(peer_ids) - 1)
                 else:
                     selected_peer = 0
                     active_peer = None
-                if active_peer is not None and active_peer not in target_peers:
+                if active_peer is not None and active_peer not in peers:
                     notice = f"{active_peer} saiu da conversa."
                     active_peer = None
                     input_buffer = ""
+                conversation = (
+                    list(history.get(active_peer, [])) + list(history.get("*", []))
+                    if active_peer is not None
+                    else []
+                )
 
             _draw_terminal(
                 screen, client_id, peer_ids, selected_peer,
-                active_peer, target_history, input_buffer, notice
+                active_peer, conversation, input_buffer, notice
             )
             notice = ""
 
@@ -328,8 +322,7 @@ async def terminal_chat(
                         elif message:
                             try:
                                 await send_chat_message(
-                                    writer, target_peers, client_id, active_peer,
-                                    message, target_history
+                                    writer, client_id, active_peer, message
                                 )
                             except (ValueError, OSError) as e:
                                 notice = f"Falha no envio: {e}"
@@ -352,7 +345,7 @@ def _draw_terminal(
     peer_ids: list[str],
     selected_peer: int,
     active_peer: str | None,
-    history_dict: dict[str, list[MessageEntry]],
+    conversation: list[MessageEntry],
     input_buffer: str,
     notice: str,
 ) -> None:
@@ -382,7 +375,6 @@ def _draw_terminal(
         _add_line(screen, 2, "-" * (width - 1), width)
         available_rows = max(1, height - 5)
         wrapped_history: list[str] = []
-        conversation = history_dict.get(active_peer, []) + history_dict.get("*", [])
         for entry in conversation:
             sender = entry["sender"]
             message = entry["message"]
