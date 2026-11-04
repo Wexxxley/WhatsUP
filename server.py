@@ -38,7 +38,6 @@ SERVER_CERT_BYTES: bytes | None = None
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     """Função assíncrona executada para cada cliente (isolada por task)."""
 
-    
     peername = writer.get_extra_info('peername') # tupla do tipo ('127.0.0.1', 42176)
     # Declarando antes pq são necessárias fora do try
     client_id_str = None
@@ -52,11 +51,11 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             # Recebe o frame do cliente utilizando o leitor de stream
             payload = await recv_frame(reader)
 
-            # Roteamento E2E (blind relay): se for frame E2E (>= MIN_E2E_FRAME_SIZE), encaminhar para o recipient_id
+            # Roteamento E2E: se for frame E2E (>= MIN_E2E_FRAME_SIZE), encaminhar para o alvo_id
             if len(payload) >= MIN_E2E_FRAME_SIZE:
                 recipient_id_bytes = payload[NONCE_SIZE + CLIENT_ID_SIZE : NONCE_SIZE + 2 * CLIENT_ID_SIZE]
                 recipient_id_str = format_client_id(recipient_id_bytes)
-                
+
                 async with sessions_lock:
                     if recipient_id_str in sessions:
                         recipient_writer = sessions[recipient_id_str]['writer']
@@ -64,17 +63,16 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         print(f"[Relay] Frame E2E encaminhado de {client_id_str} para {recipient_id_str} ({len(payload)} bytes)")
                     else:
                         print(f"[Relay] Destinatário {recipient_id_str} não encontrado.")
-                        
+
     except asyncio.IncompleteReadError:
         print(f"Conexão fechada pelo cliente {client_id_str or peername}.")
-    except (ValueError, Exception) as e:
+    except Exception as e:
         print(f"Erro de protocolo / exceção na sessão de {client_id_str or peername}: {e}")
     finally:
         if client_id_str and client_id_bytes:
             async with sessions_lock:
-                if client_id_str in sessions:
-                    del sessions[client_id_str]
-                
+                sessions.pop(client_id_str, None)
+
                 # Notificar pares restantes sobre a saída deste cliente (mensagem administrativa de saída)
                 leave_frame = client_id_bytes + b"\x00" * X25519_KEY_SIZE
                 for other_id_str, other_data in sessions.items():

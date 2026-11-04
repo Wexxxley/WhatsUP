@@ -34,7 +34,7 @@ def derive_e2e_keys(
         algorithm=hashes.SHA256(),
         length=16,
         salt=pair_salt,
-        info=b"A" # chave exclusiva para msg de A para B
+        info=b"A2B" # chave exclusiva para msg de A para B
     )
     key_a = hkdf_a.derive(z_ab)
 
@@ -42,7 +42,7 @@ def derive_e2e_keys(
         algorithm=hashes.SHA256(),
         length=16,
         salt=pair_salt, 
-        info=b"B" # chave exclusiva para msg de B para A
+        info=b"B2A" # chave exclusiva para msg de B para A
     )
     key_b = hkdf_b.derive(z_ab)
 

@@ -2,12 +2,12 @@
 
 ## Visão geral
 
-O WhatsUp é uma aplicação de mensageria com criptografia ponta a ponta
-(E2E). Clientes trocam mensagens cifradas, enquanto o
-servidor atua como relay: ele gerencia conexões e encaminha frames, mas não
+O WhatsUp é uma aplicação de mensageria com criptografia ponta a ponta (E2E).
+Clientes trocam mensagens cifradas, enquanto o servidor atua como relay: ele gerencia conexões e encaminha frames, mas não
 decifra o conteúdo das mensagens E2E.
 
-Cada cliente cria um identificador UUID e um par de chaves X25519 toda vez que o cliente é reiniciado. O cliente autentica o servidor durante o handshake, registra sua chave pública
+Cada cliente cria um identificador UUID e um par de chaves assimétricas X25519 toda vez que o cliente é reiniciado. 
+O cliente autentica o servidor durante o handshake, registra sua chave pública
 e recebe os anúncios feito pelo servidor dos peers online.
 
 ### Garantias e mecanismos
@@ -112,19 +112,23 @@ python3 -m unittest discover -s tests
 - **Assimétrica:** utiliza um par de chave privada e chave pública. X25519
   estabelece segredos compartilhados; RSA-PSS assina a resposta do servidor.
 
-### Hash, MAC e AEAD
+![Diagrama de sequência do protocolo WhatsUp](/public/Criptografias.png)
+
+### Hash e AEAD
 
 - **Hash:** função determinística e unidirecional que resume dados em um valor
-  de tamanho fixo. Hashes também podem produzir *fingerprints* de chaves para
-  depuração.
-- **MAC (Message Authentication Code):** código de autenticação com chave que
-  verifica integridade e autenticidade.
-- **AEAD (Authenticated Encryption with Associated Data):** cifra o conteúdo,
-  autentica-o e também autentica dados associados que permanecem visíveis, como
-  os IDs e o número de sequência do frame. AES-GCM é um algoritmo AEAD
+  de tamanho fixo.
+- AEAD (Criptografia autenticada com dados associados): é um padrão que os algoritmos de criptografia simétrica implementam (AES-GCM é um algoritmo AEAD) para garantir simultaneamente:
+  - **Confidencialidade**: os dados são criptografados.
+  - **Integridade**: qualquer modificação nos dados pode ser detectada por meio de uma falha na verificação da tag de autenticação durante a decifragem.
+  - **Autenticidade**: garante que os dados vieram de uma fonte confiável.
+
+  - **Dados associados (AAD)**: são informações que não são criptografadas, mas são incluídas no cálculo para gerar a tag de autenticação.
+  - **Tag de autenticação**: é um código de verificação para garantir integridade.
+  - **Nonce**: valor usado pelo AES-GCM em cada cifragem. Não é secreto e precisa ser único para cada mensagem cifrada com a mesma chave. Neste projeto, ele tem 12 bytes: 4 bytes de base aleatória seguidos por 8 bytes do número de sequência. O nonce é enviado no frame para que o destinatário use exatamente o mesmo valor ao decifrar a mensagem.
 
 
-### Diffie-Hellman, MITM e HKDF
+### Diffie-Hellman e HKDF
 
 Diffie-Hellman permite que duas partes obtenham um segredo compartilhado sem
 transmiti-lo pela rede. DH puro não autentica o outro lado e, portanto, pode
@@ -375,19 +379,19 @@ não autentica individualmente os anúncios de peers enviados depois.
 
 ## Dicionário de termos e mapeamento com os estudos
 
-| Termo / nomenclatura | Significado no projeto | Material relacionado em `Estudos/` |
+| Termo | Significado no projeto |
 |---|---|---|
-| `client_id` | Identificador UUID v4 de 16 bytes do cliente. | Identidade e sessões |
-| `sk` / `pk` | Chave privada (`sk`) e chave pública (`pk`). | [[7_Criptografia]] e [[9_Troca de chaves privadas]] |
-| `X25519` | Curva usada para o Diffie-Hellman efêmero. | [[9_Troca de chaves privadas]] |
-| `Z_AB` | Segredo bruto compartilhado calculado via ECDH entre A e B. | [[9_Troca de chaves privadas]] |
-| `salt_srv` | Salt aleatório gerado pelo servidor durante o handshake. | [[10_Key Derivation Function]] |
-| `HKDF` | Função baseada em HMAC para derivar chaves de `Z_AB`. | [[10_Key Derivation Function]] |
-| `server.crt` / pinning | Certificado autoassinado do servidor pinado no cliente. | [[11_Assinatura e certificado digital]] |
-| `RSA-PSS` | Algoritmo de assinatura usado no handshake do servidor. | [[11_Assinatura e certificado digital]] |
-| `AES-128-GCM` | Cifra AEAD que fornece confidencialidade e autenticação. | [[12_Protocolos de Segurança]] |
-| `AAD` | Dados autenticados, mas não cifrados: remetente, destinatário e sequência. | [[12_Protocolos de Segurança]] |
-| `seq_no` | Contador por direção usado para nonce, ordenação e anti-replay. | [[12_Protocolos de Segurança]] |
+| `client_id` | Identificador UUID v4 de 16 bytes do cliente. | 
+| `sk` / `pk` | Chave privada (`sk`) e chave pública (`pk`). | 
+| `X25519` | Curva usada para o Diffie-Hellman efêmero. |
+| `Z_AB` | Segredo bruto compartilhado calculado via ECDH entre A e B. |
+| `salt_srv` | Salt aleatório gerado pelo servidor durante o handshake. |
+| `HKDF` | Função para derivar chaves de `Z_AB`. |
+| `server.crt` | Certificado autoassinado do servidor pinado no cliente. | 
+| `RSA-PSS` | Algoritmo de assinatura usado no handshake do servidor. | 
+| `AES-128-GCM` | Cifra AEAD que fornece confidencialidade e autenticação. |
+| `AAD` | Dados autenticados, mas não cifrados: remetente, destinatário e sequência. | 
+| `seq_no` | Contador por direção usado para nonce, ordenação e anti-replay. | 
 
 
 ## Observações sobre X25519 e ECDH
@@ -414,4 +418,4 @@ não autentica individualmente os anúncios de peers enviados depois.
 O diagrama a seguir resume o registro dos clientes, o handshake com o servidor,
 a derivação das chaves E2E e o envio e recebimento de uma mensagem:
 
-![Diagrama de sequência do protocolo WhatsUp](./DiagramaDeSequencia-WhatsUP.svg)
+![Diagrama de sequência do protocolo WhatsUp](/public/DiagramaDeSequencia-WhatsUP.svg)
