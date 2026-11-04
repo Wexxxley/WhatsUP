@@ -14,7 +14,8 @@ e recebe os anúncios feito pelo servidor dos peers online.
 
 1. **Confidencialidade:** AES-128-GCM cifra o conteúdo das mensagens.
 2. **Integridade:** a tag de autenticação do AESGCM detecta adulterações;
-3. **Autenticidade do servidor:** Certificado (com RSA-PSS) autoassinado pinado pelo cliente autenticam a resposta inicial do servidor.
+3. **Validação do handshake:** o cliente compara o certificado recebido com
+   `certs/server.crt` e verifica a assinatura RSA-PSS correspondente.
 4. **Sigilo futuro:** pares efêmeros X25519 são usados para
    derivar chaves E2E por sessão.
 5. **Proteção contra replay:** contadores de sequência por direção rejeitam
@@ -108,12 +109,12 @@ Quando a especificação do PDF e a implementação diferem, a diferença é ind
 
 ### Preparação do servidor
 
-Ao iniciar, o servidor verifica se `certs/server.key` e `certs/server.crt`
-existem. Se um dos arquivos estiver ausente, gera um novo par e carrega as
-credenciais antes de abrir o listener; não gera um novo par RSA para cada
-cliente. O certificado público correspondente precisa estar pinado no cliente.
-Se o par foi regenerado porque um dos arquivos faltava, atualize também o
-certificado pinado pelos clientes.
+Ao iniciar, o servidor gera um novo par RSA. A chave privada fica apenas na
+memória do processo servidor; somente o certificado público é gravado em
+`certs/server.crt`, que o cliente usa como referência ao validar o handshake.
+O cliente deve ser iniciado depois do servidor para ler o certificado recém
+gerado. Como o certificado muda a cada inicialização, isso não representa uma
+identidade persistente nem um pin independente do servidor.
 
 ### Fase 1 — Inicialização e registro do cliente
 
@@ -141,7 +142,8 @@ pk_S || pk_C || client_id || salt_srv
 ```
 
 `pk_S` é a chave pública RSA extraída do certificado. O servidor assina esse
-material com RSA-PSS e SHA-256, usando `server.key`, e responde:
+material com RSA-PSS e SHA-256, usando a chave privada mantida em memória, e
+responde:
 
 ```text
 prefixo de tamanho (4B) ||
@@ -149,11 +151,15 @@ prefixo de tamanho (4B) ||
 [tamanho da assinatura] || [assinatura RSA-PSS] || [salt_srv]
 ```
 
-O cliente compara o certificado recebido com o certificado pinado, reconstrói
-o material com seu próprio `pk_C` e `client_id` e verifica a assinatura com
-`pk_S`. Se o pin ou a assinatura não corresponder, o handshake é interrompido
-(*fail-closed*). O material assinado trafega em claro: a assinatura comprova
-integridade/origem, mas não cifra os dados.
+O cliente compara o certificado recebido com `certs/server.crt`, reconstrói o
+material com seu próprio `pk_C` e `client_id` e verifica a assinatura com
+`pk_S`. Se o certificado ou a assinatura não corresponder, o handshake é
+interrompido (*fail-closed*). Como o certificado usado como referência é
+regenerado pelo servidor a cada inicialização, essa comparação valida a
+consistência com o arquivo compartilhado local; não é uma identidade
+persistentemente pinada nem protege contra um processo local capaz de alterar
+esse arquivo. O material assinado trafega em claro: a assinatura comprova
+integridade, mas não cifra os dados.
 
 O `salt_srv` autentica e identifica essa resposta do handshake. Na derivação
 E2E descrita abaixo, a implementação atual não o usa como salt comum entre os
@@ -300,8 +306,9 @@ aceito.
 ## Assinatura digital não é criptografia
 
 Quando o servidor assina
-`pk_S || pk_C || client_id || salt_srv` com `server.key`, ele não cifra esses
-dados. A assinatura permite verificar a integridade e a origem do material; o
+`pk_S || pk_C || client_id || salt_srv` com a chave privada RSA mantida em
+memória, ele não cifra esses dados. A assinatura permite verificar a
+integridade e a correspondência com a chave pública do certificado; o
 conteúdo assinado e o certificado trafegam em claro junto dela.
 
 A resposta do handshake contém:
@@ -314,9 +321,11 @@ A resposta do handshake contém:
 [salt_srv]
 ```
 
-O cliente valida o certificado por pinning e verifica a assinatura RSA-PSS com
-a chave pública do certificado. Isso autentica a resposta inicial do servidor;
-não autentica individualmente os anúncios de peers enviados depois.
+O cliente compara o certificado recebido com o arquivo local e verifica a
+assinatura RSA-PSS com a chave pública do certificado. Como esse arquivo é
+regenerado pelo próprio servidor a cada inicialização, essa validação não
+estabelece uma identidade duradoura do servidor. Ela também não autentica
+individualmente os anúncios de peers enviados depois.
 
 ## Dicionário de termos e mapeamento com os estudos
 
@@ -328,7 +337,7 @@ não autentica individualmente os anúncios de peers enviados depois.
 | `Z_AB` | Segredo bruto compartilhado calculado via ECDH entre A e B. |
 | `salt_srv` | Salt aleatório gerado pelo servidor durante o handshake. |
 | `HKDF` | Função para derivar chaves de `Z_AB`. |
-| `server.crt` | Certificado autoassinado do servidor pinado no cliente. | 
+| `server.crt` | Certificado autoassinado gerado a cada inicialização; contém a chave pública. |
 | `RSA-PSS` | Algoritmo de assinatura usado no handshake do servidor. | 
 | `AES-128-GCM` | Cifra AEAD que fornece confidencialidade e autenticação. |
 | `AAD` | Dados autenticados, mas não cifrados: remetente, destinatário e sequência. | 
@@ -363,40 +372,32 @@ não autentica individualmente os anúncios de peers enviados depois.
 
 ## FASE 0: Credenciais (Servidor)
 
-O WhatsUp usa dois tipos de criptografia, com finalidades diferentes:
+O WhatsUp usa dois tipos de criptografia com finalidades diferentes:
 
-### Criptografia simétrica e assimétrica
-
-- **Simétrica:** a mesma chave compartilhada cifra e decifra os dados. É
-  eficiente para mensagens; neste projeto, usa-se AES-128-GCM.
-- **Assimétrica:** utiliza um par de chave privada e chave pública. X25519
-  estabelece segredos compartilhados; RSA-PSS assina a resposta do servidor.
-  - Nesta fase, o servidor usa RSA para criar `server.key`.
+- **Assimétrica:** usa um par de chaves pública e privada. Nesta fase, o
+  servidor usa RSA para assinar o handshake. X25519 também usa chaves
+  assimétricas, mas para os peers derivarem um segredo compartilhado na FASE 5.
+- **Simétrica:** usa a mesma chave secreta para cifrar e decifrar. O WhatsUp usa
+  AES-128-GCM para proteger as mensagens na FASE 6.
 
 ![](/public/Criptografias.png)
 
+`server.crt` é um certificado X.509 autoassinado que contém a chave pública RSA
+do servidor e a identidade `tp3-server`. É público e pode ser compartilhado.
+A chave privada correspondente é usada para assinar o handshake e não deve ser
+compartilhada.
 
-- `server.key` é a chave privada RSA do servidor. Ela é usada para criar a
-assinatura do handshake.
-- `server.crt` é um certificado X.509 (padrão internacional). Um formato que associa uma identidade à chave pública do servidor.
+Durante a inicialização, `server.py` chama `generate_server_credentials()`.
+Essa função gera um novo par RSA, mantém a chave privada em memória no processo
+servidor e grava somente o certificado público em `certs/server.crt`. A cada
+inicialização, o certificado anterior é substituído. O cliente precisa ser
+iniciado depois do servidor para ler o certificado atualizado.
 
-O certificado é **autoassinado**: foi criado pelo próprio servidor, sem uma
-autoridade certificadora (CA) independente para confirmar sua identidade.
-
-Durante a inicialização, `server.py` chama `ensure_server_certificate()`:
-
-1. Se `certs/server.key` e `certs/server.crt` já existem, são reutilizados.
-2. Se algum deles estiver ausente, `tools/generate_certificate.py` gera um
-   novo par RSA: salva a chave privada em `server.key` e inclui a chave pública
-   correspondente no certificado autoassinado `server.crt` (obtida por
-   `private_key.public_key()`).
-
-Na conexão, o servidor envia o certificado ao cliente. O cliente compara esse
-certificado com a cópia pinada localmente.Extrai dele a chave pública e a
-usa para verificar a assinatura RSA-PSS do handshake. Portanto, a chave pública
-não verifica por si só a autenticidade do certificado: o pinning confirma que
-é o certificado esperado, e a chave pública confirma que a assinatura do
-handshake corresponde à chave privada do servidor. 
+O cliente compara o certificado recebido no handshake com esse arquivo e usa a
+chave pública nele contida para verificar a assinatura RSA-PSS. Como o próprio
+servidor atualiza o arquivo usado pelo cliente, essa comparação não é um pin
+independente nem uma identidade persistente: um processo local que consiga
+alterar o arquivo também pode mudar a referência de confiança.
 
 ## FASE 1: Registro (Cliente)
 
@@ -439,7 +440,7 @@ handshake, os dados e a assinatura trafegam em claro.
 ## FASE 3: Validação do handshake (Cliente)
 
 
-1. **Valida certificado:** compara o `cert` recebido com o `server.crt` esperado. Diferente → **conexão encerrada**.
+1. **Compara o certificado:** compara o `cert` recebido com o `certs/server.crt` gerado pelo servidor nesta inicialização. Diferente → **conexão encerrada**.
 2. **Extrai `pk_S`** do certificado.
 3. **Remonta o material:** `pk_S || pk_a || id_a || salt` 
 4. **Verifica a assinatura** RSA-PSS com `pk_S`. Inválida → **conexão encerrada**.
@@ -456,7 +457,7 @@ Com o handshake validado, o servidor integra o cliente à rede:
 
 ## FASE 5: Derivação das chaves E2E (Cliente A e Cliente B)
 
-O coração do E2E. Cada cliente, ao conhecer um peer, executa — independentemente, e chegando ao mesmo resultado:
+Cada cliente, ao conhecer um peer, executa independentemente, e chegando ao mesmo resultado:
 
 1. **Calcula o segredo compartilhado:** `Z = sk.exchange(pk_do_peer)` com X25519. O Cliente A usa `sk_a` com `pk_b`; o Cliente B usa `sk_b` com `pk_a`. Ambos obtêm **os mesmos 32 bytes de `Z`** — que nunca trafegaram na rede.
 2. **Deriva o salt do par:** `pair_salt = SHA256(b"WhatsUp E2E" || min(id_a, id_b) || max(id_a, id_b))` — determinístico e **igual nos dois lados**, pois depende só dos ids (o menor id do par define quem é "A").

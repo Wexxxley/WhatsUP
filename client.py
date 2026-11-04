@@ -118,6 +118,8 @@ async def add_peer(
 ) -> None:
     """Adiciona um peer novo, ignora anúncios repetidos e rejeita troca de chave."""
     pair_salt = hashlib.sha256(b"WhatsUp E2E" + min(client_id, peer_id_bytes) + max(client_id, peer_id_bytes)).digest()
+    
+    # Deriva as chaves de envio e recebimento para comunicação E2E com o peer
     key_send, key_recv, iv_base_send = derive_e2e_keys(sk_a, peer_pk_bytes, client_id, peer_id_bytes, pair_salt)
     public_key_b = deserialize_public_key(peer_pk_bytes)
 

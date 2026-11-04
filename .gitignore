@@ -1,6 +1,5 @@
 venv/
 __pycache__/
-server.key
 *.log
-server.crt
-server.key
+/certs/server.crt
+/certs/server.key

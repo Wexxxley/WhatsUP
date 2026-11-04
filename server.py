@@ -6,10 +6,9 @@ from protocol.framing import send_frame, recv_frame
 from protocol.ids import format_client_id
 from protocol.keys import deserialize_public_key
 from protocol.handshake import (
-    load_server_private_key,
     create_server_handshake_response
 )
-from tools.generate_certificate import ensure_server_certificate
+from tools.generate_certificate import generate_server_credentials
 from protocol.spec import (
     MIN_E2E_FRAME_SIZE,
     REGISTRATION_FRAME_SIZE,
@@ -141,11 +140,8 @@ async def main():
     """Função principal do servidor responsável por inicializar o listener TCP."""
     global SERVER_PRIV_KEY, SERVER_CERT_BYTES
 
-    # Garantir que o certificado do servidor exista, caso contrário, gerar um novo
-    ensure_server_certificate()
-    SERVER_PRIV_KEY = load_server_private_key()
-    with open("certs/server.crt", "rb") as f:
-        SERVER_CERT_BYTES = f.read()
+    # Gera uma chave nova em memória e persiste apenas o certificado público.
+    SERVER_PRIV_KEY, SERVER_CERT_BYTES = generate_server_credentials()
 
     # Inicializa o servidor, passagem de handle_client como callback para cada nova conexão
     server = await asyncio.start_server(handle_client, '127.0.0.1', 8888)
