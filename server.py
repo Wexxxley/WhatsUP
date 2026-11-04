@@ -28,7 +28,7 @@ class SessionData(TypedDict):
     salt: bytes
 
 sessions_lock = asyncio.Lock() # serve para garantir a concorrência segura (thread-safe) e fila de espera
-sessions: dict[str, SessionData] = {}
+sessions: dict[str, SessionData] = {} # id do cliente -> SessionData
 
 SERVER_PRIV_KEY: rsa_types.RSAPrivateKey | None = None
 SERVER_CERT_BYTES: bytes | None = None
@@ -39,6 +39,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     """Função assíncrona executada para cada cliente (isolada por task)."""
 
     peername = writer.get_extra_info('peername') # tupla do tipo ('127.0.0.1', 42176)
+    
     # Declarando antes pq são necessárias fora do try
     client_id_str = None
     client_id_bytes = None
@@ -92,7 +93,7 @@ async def registration(reader, writer):
     if SERVER_PRIV_KEY is None or SERVER_CERT_BYTES is None:
         raise RuntimeError("Credenciais do servidor não foram carregadas")
 
-    # Primeiro frame -> registro: client_id (16B) + pk (32B) = REGISTRATION_FRAME_SIZE
+    # client_id (16B) + pk (32B)
     registration_frame = await recv_frame(reader)
     if len(registration_frame) != REGISTRATION_FRAME_SIZE:
         raise ValueError("Frame de registro inválido")
@@ -123,7 +124,7 @@ async def registration(reader, writer):
             new_client_info = client_id_bytes + pk_c_bytes
             await send_frame(existing_data['writer'], new_client_info)
 
-        # 2. Registrar o novo cliente na tabela sessions
+        # Registrar o novo cliente na tabela sessions
         sessions[client_id_str] = {
             'writer': writer,
             'public_key': pk_c,
@@ -140,12 +141,13 @@ async def main():
     """Função principal do servidor responsável por inicializar o listener TCP."""
     global SERVER_PRIV_KEY, SERVER_CERT_BYTES
 
+    # Garantir que o certificado do servidor exista, caso contrário, gerar um novo
     ensure_server_certificate()
     SERVER_PRIV_KEY = load_server_private_key()
     with open("certs/server.crt", "rb") as f:
         SERVER_CERT_BYTES = f.read()
 
-    # Inicializa o servidor TCP, passagem de handle_client como callback para cada nova conexão
+    # Inicializa o servidor, passagem de handle_client como callback para cada nova conexão
     server = await asyncio.start_server(handle_client, '127.0.0.1', 8888)
     print("Servidor iniciado em 127.0.0.1:8888")
 

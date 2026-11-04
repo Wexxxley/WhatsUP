@@ -43,6 +43,7 @@ history: dict[str, list[MessageEntry]] = {} # Histórico de mensagens por peer. 
 
 client_lock = asyncio.Lock()
 
+#--------------------------------------------------------------------------------------------
 
 async def main():
     global peers, history
@@ -69,18 +70,11 @@ async def main():
     # Receber e verificar resposta do handshake do servidor
     try:
         handshake_response = await recv_frame(reader)
-        salt_srv = verify_server_handshake_response(
-            handshake_response,
-            "certs/server.crt",
-            pk_bytes,
-            id_a
-        )
-        print(f"Handshake verificado com sucesso! Salt recebido (hex): {salt_srv.hex()}")
-
+        salt_srv = verify_server_handshake_response(handshake_response,"certs/server.crt",pk_bytes,id_a)
+        
         num_peers_bytes = await recv_frame(reader)
         num_peers = int.from_bytes(num_peers_bytes, 'big')
         print(f"Recebendo {num_peers} peer(s) inicial(is)...")
-
         for _ in range(num_peers):
             peer_frame = await recv_frame(reader)
             if len(peer_frame) != 48:

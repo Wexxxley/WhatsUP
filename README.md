@@ -20,11 +20,6 @@ e recebe os anúncios feito pelo servidor dos peers online.
 5. **Proteção contra replay:** contadores de sequência por direção rejeitam
    mensagens repetidas ou fora de ordem.
 
-> **Escopo da autenticação:** o handshake autentica a resposta inicial do
-> servidor. Os anúncios de entrada/saída de peers posteriores são frames de
-> controle recebidos pela conexão TCP e não possuem assinatura ou MAC próprio
-> nesta implementação.
-
 ## Navegação
 
 - [Estrutura do projeto](#estrutura-do-projeto)
@@ -36,54 +31,13 @@ e recebe os anúncios feito pelo servidor dos peers online.
 - [Dicionário de termos](#dicionario-de-termos-e-mapeamento-com-os-estudos)
 - [Observações sobre X25519 e ECDH](#observacoes-sobre-x25519-e-ecdh)
 
-## Estrutura do projeto
 
-```text
-WhatsUp/
-|-- server.py                  # Servidor TCP: relay e gerenciamento de sessões
-|-- client.py                  # Cliente e interface interativa no terminal
-|-- protocol/
-|   |-- framing.py             # Prefixo de tamanho e leitura/escrita de frames
-|   |-- ids.py                 # Geração e formatação de UUID v4
-|   |-- handshake.py           # Assinatura e verificação do handshake
-|   |-- keys.py                # Pares X25519 e serialização de chaves
-|   |-- spec.py                # Tamanhos e constantes do protocolo
-|   `-- crypto.py              # HKDF, AES-GCM e validação anti-replay
-|-- tools/
-|   `-- generate_certificate.py # Geração do certificado e da chave do servidor
-|-- certs/
-|   |-- server.crt             # Certificado público pinado pelos clientes
-|   `-- server.key             # Chave privada RSA do servidor
-`-- tests/                     # Testes unitários, de protocolo e integração
-```
+## Execução
 
-## Pré-requisitos e execução
-
-### Dependências
-
-Use Python 3.10 ou superior e instale `cryptography`:
 
 ```bash
 python3 -m pip install cryptography
 ```
-
-### Certificado do servidor
-
-Ao iniciar, o servidor verifica se `certs/server.key` e `certs/server.crt`
-existem. Se faltar qualquer um, gera um novo par RSA e certificado autoassinado.
-Também é possível gerá-los manualmente:
-
-```bash
-python3 tools/generate_certificate.py
-```
-
-O certificado `certs/server.crt` precisa estar disponível no cliente para a
-verificação por pinning. A chave privada `certs/server.key` deve permanecer
-protegida e nunca deve ser distribuída aos clientes.
-Se apenas um dos arquivos estiver presente, o servidor gera um novo par
-completo; como o certificado muda, os clientes precisam atualizar o pin.
-
-### Iniciar o servidor e os clientes
 
 Em um terminal, inicie o servidor:
 
@@ -105,15 +59,6 @@ python3 -m unittest discover -s tests
 
 ## Conceitos usados no protocolo
 
-### Criptografia simétrica e assimétrica
-
-- **Simétrica:** a mesma chave compartilhada cifra e decifra os dados. É
-  eficiente para mensagens; neste projeto, usa-se AES-128-GCM.
-- **Assimétrica:** utiliza um par de chave privada e chave pública. X25519
-  estabelece segredos compartilhados; RSA-PSS assina a resposta do servidor.
-
-![Diagrama de sequência do protocolo WhatsUp](/public/Criptografias.png)
-
 ### Hash e AEAD
 
 - **Hash:** função determinística e unidirecional que resume dados em um valor
@@ -125,14 +70,14 @@ python3 -m unittest discover -s tests
 
   - **Dados associados (AAD)**: são informações que não são criptografadas, mas são incluídas no cálculo para gerar a tag de autenticação.
   - **Tag de autenticação**: é um código de verificação para garantir integridade.
-  - **Nonce**: valor usado pelo AES-GCM em cada cifragem. Não é secreto e precisa ser único para cada mensagem cifrada com a mesma chave. Neste projeto, ele tem 12 bytes: 4 bytes de base aleatória seguidos por 8 bytes do número de sequência. O nonce é enviado no frame para que o destinatário use exatamente o mesmo valor ao decifrar a mensagem.
+  - **Nonce**: valor usado pelo AES-GCM em cada cifragem. Não é secreto e precisa ser único para cada mensagem cifrada com a mesma chave. Neste projeto, ele tem 12 bytes: 4 bytes de base aleatória seguidos por 8 bytes do número de sequência.
 
 
 ### Diffie-Hellman e HKDF
 
-Diffie-Hellman permite que duas partes obtenham um segredo compartilhado sem
+Diffie-Hellman (DH) permite que duas partes obtenham um segredo compartilhado sem
 transmiti-lo pela rede. DH puro não autentica o outro lado e, portanto, pode
-ser vulnerável a um ataque *Man-in-the-Middle* (MITM). O handshake RSA-PSS
+ser vulnerável a um ataque Man-in-the-Middle (MITM). O handshake RSA-PSS
 autentica a resposta inicial do servidor; as chaves públicas dos peers são
 distribuídas pelo relay.
 
@@ -148,10 +93,6 @@ entrada já forte.
 Uma assinatura digital é criada com a chave privada do emissor e pode ser
 verificada com a chave pública correspondente. Ela comprova integridade e
 origem; **não cifra nem torna secreto** o material assinado.
-
-Um certificado X.509 associa uma identidade a uma chave pública. Neste projeto,
-o certificado do servidor é autoassinado e pinado localmente pelo cliente
-(uma confiança configurada fora da cadeia de uma CA pública).
 
 ### Entropia
 
@@ -413,9 +354,206 @@ não autentica individualmente os anúncios de peers enviados depois.
    Na implementação X25519, cada lado chama `.exchange()` com sua chave
    privada e a chave pública do peer. Ambos obtêm o mesmo `Z_AB`.
 
+---
+
 ## Diagrama de sequência
 
-O diagrama a seguir resume o registro dos clientes, o handshake com o servidor,
-a derivação das chaves E2E e o envio e recebimento de uma mensagem:
 
 ![Diagrama de sequência do protocolo WhatsUp](/public/DiagramaDeSequencia-WhatsUP.svg)
+
+## FASE 0: Credenciais (Servidor)
+
+O WhatsUp usa dois tipos de criptografia, com finalidades diferentes:
+
+### Criptografia simétrica e assimétrica
+
+- **Simétrica:** a mesma chave compartilhada cifra e decifra os dados. É
+  eficiente para mensagens; neste projeto, usa-se AES-128-GCM.
+- **Assimétrica:** utiliza um par de chave privada e chave pública. X25519
+  estabelece segredos compartilhados; RSA-PSS assina a resposta do servidor.
+  - Nesta fase, o servidor usa RSA para criar `server.key`.
+
+![](/public/Criptografias.png)
+
+
+- `server.key` é a chave privada RSA do servidor. Ela é usada para criar a
+assinatura do handshake.
+- `server.crt` é um certificado X.509 (padrão internacional). Um formato que associa uma identidade à chave pública do servidor.
+
+O certificado é **autoassinado**: foi criado pelo próprio servidor, sem uma
+autoridade certificadora (CA) independente para confirmar sua identidade.
+
+Durante a inicialização, `server.py` chama `ensure_server_certificate()`:
+
+1. Se `certs/server.key` e `certs/server.crt` já existem, são reutilizados.
+2. Se algum deles estiver ausente, `tools/generate_certificate.py` gera um
+   novo par RSA: salva a chave privada em `server.key` e inclui a chave pública
+   correspondente no certificado autoassinado `server.crt` (obtida por
+   `private_key.public_key()`).
+
+Na conexão, o servidor envia o certificado ao cliente. O cliente compara esse
+certificado com a cópia pinada localmente.Extrai dele a chave pública e a
+usa para verificar a assinatura RSA-PSS do handshake. Portanto, a chave pública
+não verifica por si só a autenticidade do certificado: o pinning confirma que
+é o certificado esperado, e a chave pública confirma que a assinatura do
+handshake corresponde à chave privada do servidor. 
+
+## FASE 1: Registro (Cliente)
+
+Quando um cliente é iniciado:
+
+1. **Gera sua id:** um **UUID v4** de 16 bytes.
+2. **Gera par de chaves X25519:** `sk_a` (privada) e `pk_a` (pública). São efêmeras: nascem e morrem com esta execução do cliente.
+3. Conecta via ao servidor.
+4. **Envia o frame de registro:** `Pre(4B) || id_a(16B) || pk_a(32B)`. 
+- **Prefixo:** informa, em 4 bytes, o tamanho do payload que vem depois dele.
+
+**FRAME**: O TCP é um **fluxo de bytes sem fronteiras de mensagem**. Por isso todo frame começa com `Pre`, um prefixo de **4 bytes big-endian** declarando o tamanho do payload. 
+
+## FASE 2: Handshake (Servidor)
+
+Assim que o registro chega, o servidor responde provando quem é:
+
+1. Recebe `id_a` e `pk_a`.
+2. **Gera um `salt` aleatório** para esta sessão.
+4. **Monta o material do handshake:** `pk_S || pk_a || id_a || salt`.
+5. **Assina** esse material com **RSA-PSS + SHA-256**, usando sua chave privada.
+6. **Responde ao cliente:** `(certificado, assinatura, salt)`.
+
+Por que assinar o material inteiro (e não só o salt)? Porque a assinatura "gruda" as peças: ela vale para **aquela** `pk_a`, **aquele** `id_a` e **aquele** salt, naquela ordem. Trocar qualquer byte invalida a verificação na FASE 3.
+
+### Conceito: assinatura digital
+
+Com RSA-PSS, o servidor usa sua chave **privada** para gerar uma assinatura
+associada ao material do handshake. O cliente usa a
+chave **pública** correspondente para verificar se a assinatura confere com
+esse material.
+
+**Assinatura não é criptografia:** ela não esconde o material assinado; neste
+handshake, os dados e a assinatura trafegam em claro.
+
+### Conceito: salt e entropia
+
+**Salt** é um valor aleatório usado como tempero de derivação, para que o mesmo material produza resultados diferentes em sessões diferentes. **Entropia** é a imprevisibilidade da aleatoriedade — e toda a segurança do protocolo repousa sobre ela.
+
+## FASE 3: Validação do handshake (Cliente)
+
+
+1. **Valida certificado:** compara o `cert` recebido com o `server.crt` esperado. Diferente → **conexão encerrada**.
+2. **Extrai `pk_S`** do certificado.
+3. **Remonta o material:** `pk_S || pk_a || id_a || salt` 
+4. **Verifica a assinatura** RSA-PSS com `pk_S`. Inválida → **conexão encerrada**.
+
+## FASE 4: Registro na sessão e anúncio dos peers (Servidor)
+
+Com o handshake validado, o servidor integra o cliente à rede:
+
+1. Sob a `sessions_lock` (`asyncio.Lock`) registra a sessão
+2. Envia o número de peers online* e os dados de cada um.
+3. A partir daqui o Cliente A sabe quem está online e com quais chaves públicas.
+
+> **Limitação**: O handshake das FASES 2–3 autentica o servidor, não os peers
+
+## FASE 5: Derivação das chaves E2E (Cliente A e Cliente B)
+
+O coração do E2E. Cada cliente, ao conhecer um peer, executa — independentemente, e chegando ao mesmo resultado:
+
+1. **Calcula o segredo compartilhado:** `Z = sk.exchange(pk_do_peer)` com X25519. O Cliente A usa `sk_a` com `pk_b`; o Cliente B usa `sk_b` com `pk_a`. Ambos obtêm **os mesmos 32 bytes de `Z`** — que nunca trafegaram na rede.
+2. **Deriva o salt do par:** `pair_salt = SHA256(b"WhatsUp E2E" || min(id_a, id_b) || max(id_a, id_b))` — determinístico e **igual nos dois lados**, pois depende só dos ids (o menor id do par define quem é "A").
+3. **Deriva as duas chaves de direção com HKDF-SHA256:**
+   - `key_A = HKDF(salt=pair_salt, info=b"A", length=16)`
+   - `key_B2A = HKDF(salt=pair_salt, info=b"B2A", length=16)`
+4. **Define o papel pelo menor id:** se meu id < id do peer, sou o "A" deste par → `key_send = key_A` e `key_recv = key_B2A`; senão, o contrário. Cada direção usa **uma chave diferente** (full-duplex seguro).
+5. **Gera o `IV_base_send`:** 4 bytes aleatórios — a base dos nonces desta direção (FASE 6).
+6. **Descarta `Z`:** o segredo bruto some da memória; só as chaves derivadas permanecem.
+7. **Registra o peer:** `peers[id_peer] = {key_send, key_recv, IV_base_send, seq_send = 0, seq_recv = -1}`.
+
+> **Divergência implementação × enunciado (PDF):** o enunciado do trabalho especifica derivar as chaves com o **`salt_srv`** (recebido na FASE 2) e os rótulos **`A2B`/`B2A`**. Esta implementação usa o **salt determinístico do par** e os rótulos `b"A"`/`b"B2A"`. O efeito criptográfico é equivalente (duas chaves independentes de 16 B, uma por direção), mas os valores derivados diferem — quem seguir o PDF à risca não interoperaria com esta implementação.
+
+### Conceito: Diffie–Hellman em curvas elípticas (ECDH)
+
+O problema que o DH resolve: **como duas partes que nunca se falaram criam um segredo comum, olhando apenas mensagens públicas?** A resposta é a aritmética da troca: A calcula `Z = sk_a × pk_b` e B calcula `Z = sk_b × pk_a` — pelas propriedades da curva, os resultados são **iguais**, mas um observador que vê apenas `pk_a` e `pk_b` não consegue computar `Z` (problema do logaritmo discreto elíptico). O X25519 é a versão moderna e padronizada do ECDH sobre a curva Curve25519: chaves de 32 bytes, rápida e desenhada para resistir a ataques de side-channel de tempo.
+
+### Conceito: HKDF (função de derivação de chaves)
+
+O `Z` bruto não deve virar chave de cifra diretamente (pode ter vieses estruturais). O **HKDF** (HMAC-based Key Derivation Function, RFC 5869) o transforma em chaves de uso específico em duas etapas: **extract** (comprime a entropia de `Z` junto com o salt) e **expand** (expande para o tamanho desejado, temperado pelo `info`). O `info` — aqui os rótulos `b"A"` e `b"B2A"` — **separa os domínios**: derivar com rótulos diferentes produz chaves totalmente independentes mesmo com a mesma entrada. É por isso que uma direção não consegue decifrar o tráfego da outra.
+
+### Observações sobre X25519 e ECDH
+
+- **Por que curvas elípticas?** Chaves curtas com segurança alta: 256 bits de curva equivalem a aproximadamente 3072 bits de RSA — e o X25519 usa chaves de apenas 32 bytes.
+- **Por que chaves efêmeras?** O par nasce no boot (FASE 1) e morre com a execução do cliente. Reiniciou, chaves novas — e, com UUIDs novos, salt do par e chaves de sessão também novos.
+- **`exchange()` é o DH:** `private_key.exchange(public_key)` devolve exatamente o segredo compartilhado de 32 bytes; a operação é simétrica — qualquer dos dois pares calcula o mesmo `Z`.
+- **`Z` é descartado de propósito** (passo 6): nada além das chaves HKDF deve depender dele. Menos segredos vivos em memória, menor superfície de vazamento.
+
+## FASE 6: Cifragem E2E com AES-128-GCM (Cliente A)
+
+Com chave em mãos, o cliente A escreve para B:
+
+1. **Constrói o nonce (12 B):** `nonce = IV_base_send(4B) || seq_send(8B, big-endian)`. O contador embutido garante **nonce nunca repetido** enquanto a sessão viver — e repetir nonce sob GCM é o erro que destrói a chave.
+2. **Constrói o AAD (40 B):** `sender_id(16B) || recipient_id(16B) || seq_no(8B)` — dados que serão autenticados, mas **não cifrados**.
+3. **Cifra:** `AESGCM(key_send).encrypt(nonce, plaintext, aad)` → ciphertext com a **tag de 16 B** anexada.
+4. **Envia o frame E2E** ao servidor, endereçado a `id_b`. O servidor **repassa intacto**: não pode ler (não tem a chave) nem adulterar (a tag pega na FASE 7).
+
+### Conceito: criptografia simétrica
+
+Na criptografia simétrica, **a mesma chave cifra e decifra** — é ordens de magnitude mais rápida que a assimétrica e por isso é a escolha natural para o conteúdo das mensagens. Seu desafio clássico é a **distribuição da chave**: como entregar a chave a B sem que ninguém a intercepte? O WhatsUp responde com a FASE 5 — a chave nunca é distribuída; ela é **derivada nos dois lados** a partir do segredo ECDH.
+
+### Conceito: AES-GCM e AEAD
+
+O **AES-128-GCM** é um modo **AEAD** (Authenticated Encryption with Associated Data): uma única operação entrega **confidencialidade + integridade + autenticidade**. A tag de 16 B é o "selo": decifrar com qualquer byte alterado — do ciphertext, do nonce ou do AAD — falha com `InvalidTag`. É por isso que um relay curioso pode adulterar quanto quiser: nada adulterado passa na FASE 7.
+
+### Conceito: nonce e AAD — por que cada byte importa
+
+- **Nonce (12 B):** precisa ser único por mensagem sob a mesma chave. Aqui ele é **deterministicamente único**: base aleatória de 4 B + contador de 8 B que cresce a cada envio. Com GCM, reutilizar o par (nonce, chave) é catastrófico — vaza a relação entre mensagens e permite falsificar tags. Este desenho elimina o risco por construção.
+- **AAD (40 B):** metadados que **não são cifrados mas são autenticados**. O receptor reconstrói o AAD e o alimenta na decifragem; se alguém trocou `sender_id`, `recipient_id` ou `seq_no` no caminho, o AAD diverge → `InvalidTag`. Ou seja: o cabeçalho não é secreto, mas **é à prova de mentira**.
+
+**Limites por frame** (`protocol/spec.py`):
+
+| Campo | Valor |
+|---|---|
+| `Pre` (prefixo de tamanho) | 4 B, big-endian |
+| Frame de transporte (máx.) | 4200 B |
+| Payload E2E (máx.) | 4164 B = AAD (40 B) + nonce (12 B) + ciphertext+tag (≤ 4112 B) |
+| Texto claro (máx.) | 4096 B (4096 + 16 de tag + 52 de cabeçalho E2E = 4164) |
+
+## FASE 7: Recepção, anti-replay e decifragem (Cliente B)
+
+O cliente B recebe um frame E2E e executa, nesta ordem:
+
+1. **Validação anti-replay:** exige `seq_no == seq_recv + 1`, **exatamente**. Repetido, fora de ordem ou muito no futuro → **frame rejeitado** (descartado sem decifrar).
+2. **Decifra:** `AESGCM(key_recv).decrypt(nonce, ciphertext+tag, aad)`.
+3. **`InvalidTag` → falha imediata:** mensagem descartada; não há retentativa nem "aceitar mesmo assim".
+4. **Atualiza o contador:** `seq_recv = seq_no`.
+5. **Exibe o texto claro** no terminal.
+
+A ordem importa: o anti-replay vem **antes** da decifragem, para que frames repetidos nem cheguem ao AES.
+
+### Conceito: ataque de replay e os contadores por direção
+
+**Replay** é o ataque em que o adversário **retransmite um frame legítimo antigo**. A mensagem é autêntica (a tag confere!) — e ainda assim é uma mentira ("aprove a transferência", de novo). A defesa: cada cliente mantém **dois contadores por peer**, um por direção:
+
+- `seq_send` começa em **0** e vira o `seq_no` de cada envio, incrementando a cada mensagem (e também alimentando o nonce — FASE 6);
+- `seq_recv` começa em **-1** e só avança quando chega exatamente o próximo número esperado.
+
+Como cada direção tem seu próprio par (chave, contador), os dois lados podem falar ao mesmo tempo sem colisão.
+
+**Exemplo — contadores do Cliente A:**
+
+| Momento | `seq_send` (A) | `seq_recv` (A) | O que acontece |
+|---|---|---|---|
+| Após a FASE 5 | 0 | -1 | nada enviado; espera receber `seq_no` 0 |
+| A envia a 1ª msg | 0 → 1 | -1 | frame sai com `seq_no` = 0 |
+| A recebe a 1ª msg de B | 1 | -1 → 0 | esperava 0 ✓; decifra |
+| A envia a 2ª msg | 1 → 2 | 0 | frame sai com `seq_no` = 1 |
+| A recebe a 2ª msg de B | 2 | 0 → 1 | esperava 1 ✓; decifra |
+| Atacante reenvia o 1º frame de B | 2 | 1 | esperava 2, veio 0 → **rejeitado** |
+
+**Exemplo — contadores do Cliente B (espelho):**
+
+| Momento | `seq_send` (B) | `seq_recv` (B) | O que acontece |
+|---|---|---|---|
+| Após a FASE 5 | 0 | -1 | espera receber `seq_no` 0 |
+| B recebe a 1ª msg de A | 0 | -1 → 0 | esperava 0 ✓; decifra |
+| B responde (1ª msg) | 0 → 1 | 0 | frame sai com `seq_no` = 0 |
+| B recebe a 2ª msg de A | 1 | 0 → 1 | esperava 1 ✓; decifra |
+| Frame com `seq_no` = 3 "do futuro" | 1 | 1 | esperava 2, veio 3 → **rejeitado** |

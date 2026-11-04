@@ -19,17 +19,15 @@ def generate_server_certificate(cert_dir: Path = Path("certs")) -> None:
     )
     
     # 2. Gerar certificado autoassinado
-    #Subject (assunto, no caso o servidor) e Issuer (emissor do certificado) são os mesmos, pois é autoassinado
-    subject = issuer = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, u"tp3-server"),
-    ])
+    #Subject (no caso o servidor) e Issuer (emissor do certificado) são os mesmos, pois é autoassinado
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, u"tp3-server"),])
     
     cert = x509.CertificateBuilder().subject_name(
         subject
     ).issuer_name(
         issuer
     ).public_key(
-        private_key.public_key()
+        private_key.public_key() # Chave pública correspondente à chave privada
     ).serial_number(
         x509.random_serial_number()
     ).not_valid_before(
@@ -65,13 +63,11 @@ def ensure_server_certificate(cert_dir: Path = Path("certs")) -> bool:
         return False
 
     if cert_path.exists() or key_path.exists():
-        print(
-            "Par de certificado incompleto; será gerado um novo par. "
-            "Clientes que usam pinning precisarão receber o novo certificado."
-        )
+        print("Par de certificado incompleto; será gerado um novo par. ")
 
     generate_server_certificate(cert_dir)
     return True
 
+# Se este arquivo for executado diretamente, gerar o certificado do servidor
 if __name__ == "__main__":
     generate_server_certificate()

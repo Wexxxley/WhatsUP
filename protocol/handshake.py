@@ -47,7 +47,7 @@ def create_server_handshake_response(
     
     # assina SHA256 (pk_server || pk_client || client_id || salt)    
     signature = server_priv_key.sign(
-        pk_s_bytes + pk_c_bytes + client_id_bytes + salt_srv,
+        (pk_s_bytes + pk_c_bytes + client_id_bytes + salt_srv),
         padding.PSS(
             mgf=padding.MGF1(hashes.SHA256()),
             salt_length=padding.PSS.MAX_LENGTH
@@ -63,10 +63,10 @@ def create_server_handshake_response(
         server_cert_bytes +
         sig_len.to_bytes(4, 'big') +
         signature +
-        salt_srv # para o cliente
+        salt_srv
     )
     
-    return (response_payload, salt_srv) # para o registration em server.py
+    return (response_payload, salt_srv)
 
 def verify_server_handshake_response(
     response_payload: bytes,
@@ -74,61 +74,44 @@ def verify_server_handshake_response(
     pk_c_bytes: bytes,
     client_id_bytes: bytes
 ) -> bytes:
-    """
-    Verifica a resposta do handshake do servidor:
-    1. Carrega o certificado pinado local.
-    2. Realiza o parsing binário do payload recebido (certificado + assinatura + salt_srv).
-    3. Executa a validação de Pinning (compara o certificado recebido com o pinado).
-    4. Extrai a chave pública do servidor (pk_S) e remonta o material assinado:
-       (pk_S || pk_C || client_id || salt_srv).
-    5. Valida a assinatura digital RSA-PSS(SHA-256).
-    Retorna o salt_srv se bem-sucedido; levanta exceção caso contrário (Fail-closed).
-    """
-    # 1. Carregar certificado pinado local
-    with open(pinned_cert_path, "rb") as f:
-        pinned_cert_bytes = f.read()
-        
+    """Valida o certificado e a assinatura da resposta de handshake."""
     if len(response_payload) < 8:
         raise ValueError("Payload de handshake muito curto (menor que o cabeçalho mínimo)")
-        
-    # 2. Parsing do payload binário
-    offset = 0
-    # 2.1 Extrair certificado do servidor
-    cert_len = int.from_bytes(response_payload[offset:offset + 4], 'big')
-    offset += 4
-    
-    if len(response_payload) < offset + cert_len + 4:
+
+    # A resposta contém: tamanho do certificado, certificado,
+    # tamanho da assinatura, assinatura e salt.
+    cert_len = int.from_bytes(response_payload[:4], "big")
+    cert_start = 4
+    cert_end = cert_start + cert_len
+    if len(response_payload) < cert_end + 4:
         raise ValueError("Payload truncado ao ler o certificado do servidor")
-        
-    received_cert_bytes = response_payload[offset:offset + cert_len]
-    offset += cert_len
-    
-    # 2.2 Extrair assinatura RSA-PSS
-    sig_len = int.from_bytes(response_payload[offset:offset + 4], 'big')
-    offset += 4
-    
-    if len(response_payload) < offset + sig_len + 16:
+
+    received_cert_bytes = response_payload[cert_start:cert_end]
+
+    sig_len_start = cert_end
+    sig_len = int.from_bytes(response_payload[sig_len_start:sig_len_start + 4], "big")
+    signature_start = sig_len_start + 4
+    signature_end = signature_start + sig_len
+    salt_end = signature_end + SALT_SIZE
+    if len(response_payload) < salt_end:
         raise ValueError("Payload truncado ao ler a assinatura ou o salt do servidor")
-        
-    signature = response_payload[offset:offset + sig_len]
-    offset += sig_len
-    
-    # 2.3 Extrair salt_srv (16 bytes finais)
-    salt_srv = response_payload[offset:offset + 16]
-    
-    # 3. Validação do certificado
+
+    signature = response_payload[signature_start:signature_end]
+    salt_srv = response_payload[signature_end:salt_end]
+
+    # O pinning confirma que recebemos o certificado esperado.
+    with open(pinned_cert_path, "rb") as f:
+        pinned_cert_bytes = f.read()
     if received_cert_bytes.strip() != pinned_cert_bytes.strip():
         raise ValueError("Falha de Pinning: O certificado recebido não confere com o certificado pinado!")
-        
-    # 4. Extração de pk_S e Remontagem do Material Assinado
+
+    # Reconstrói os dados exatos que o servidor assinou.
     server_cert = x509.load_pem_x509_certificate(received_cert_bytes)
     pk_s_bytes = get_server_pubkey_bytes(server_cert)
     server_pub_key = server_cert.public_key()
-    
-    # Ordem estrita do contrato do protocolo
     material = pk_s_bytes + pk_c_bytes + client_id_bytes + salt_srv
-    
-    # Verificar assinatura RSA-PSS
+
+    # A chave pública verifica se a assinatura corresponde a esses dados.
     try:
         server_pub_key.verify(
             signature,
@@ -141,5 +124,5 @@ def verify_server_handshake_response(
         )
     except InvalidSignature as e:
         raise InvalidSignature("Assinatura do servidor inválida (RSA-PSS falhou)") from e
-        
+
     return salt_srv
