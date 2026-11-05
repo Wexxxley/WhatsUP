@@ -1,10 +1,10 @@
 import asyncio
 import curses
-import hashlib
 import locale
 import textwrap
 from uuid import UUID
 from typing import TypedDict
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PrivateKey,
     X25519PublicKey,
@@ -12,6 +12,13 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
 from protocol.framing import send_frame, recv_frame
 from protocol.ids import generate_client_id, format_client_id
 from protocol.keys import generate_key_pair, serialize_public_key
+from protocol.admin import (
+    ADMIN_LEAVE,
+    ADMIN_JOIN,
+    ADMIN_MAGIC,
+    ADMIN_ROTATE,
+    verify_admin_frame,
+)
 from protocol.crypto import (
     derive_e2e_keys,
     encrypt_e2e_message,
@@ -20,8 +27,6 @@ from protocol.crypto import (
 )
 from protocol.handshake import verify_server_handshake_response
 from protocol.spec import (
-    PEER_LEAVE_PUBLIC_KEY,
-    REGISTRATION_FRAME_SIZE,
     MIN_E2E_FRAME_SIZE
 )
 
@@ -40,6 +45,7 @@ class MessageEntry(TypedDict):
 
 peers: dict[str, PeerData] = {}
 history: dict[str, list[MessageEntry]] = {} # Histórico de mensagens por peer. A lista de um chat específico armazena tanto as que você enviou quanto as que você recebeu daquele
+admin_last_seq: dict[tuple[bytes, bytes, bytes], int] = {}
 
 client_lock = asyncio.Lock()
 
@@ -77,16 +83,11 @@ async def main():
         print(f"Recebendo {num_peers} peer(s) inicial(is)...")
         for _ in range(num_peers):
             peer_frame = await recv_frame(reader)
-            if len(peer_frame) != 48:
-                raise ValueError("Frame de peer inválido")
-            peer_client_id_bytes = peer_frame[:16]
-            peer_pk_bytes = peer_frame[16:]
-            peer_id_str = format_client_id(peer_client_id_bytes)
-
-            await add_peer(
-                peer_id_str, peer_client_id_bytes, peer_pk_bytes, id_a, sk_a
+            announcement = await apply_admin_frame(
+                peer_frame, id_a, sk_a, salt_srv
             )
-            print(f"Peer online: {peer_id_str}")
+            if announcement.announcement_type in (ADMIN_JOIN, ADMIN_ROTATE):
+                print(f"Peer online: {format_client_id(announcement.announced_id)}")
 
     except Exception as e:
         print(f"ERRO DE HANDSHAKE / DERIVAÇÃO DE CHAVES: {e}")
@@ -94,7 +95,9 @@ async def main():
         await writer.wait_closed()
         return
 
-    receiver = asyncio.create_task(receive_messages(reader, id_a, sk_a)) # Tarefa assíncrona para receber mensagens de forma contínua 
+    receiver = asyncio.create_task(
+        receive_messages(reader, id_a, sk_a, salt_srv)
+    ) # Tarefa assíncrona para receber mensagens de forma contínua
     try:
         await terminal_chat(writer, id_a)
     except KeyboardInterrupt:
@@ -115,23 +118,26 @@ async def add_peer(
     peer_pk_bytes: bytes,
     client_id: bytes,
     sk_a: X25519PrivateKey,
+    salt_srv: bytes,
 ) -> None:
-    """Adiciona um peer novo, ignora anúncios repetidos e rejeita troca de chave."""
-    pair_salt = hashlib.sha256(b"WhatsUp E2E" + min(client_id, peer_id_bytes) + max(client_id, peer_id_bytes)).digest()
+    """Adiciona um peer usando o salt autenticado do handshake."""
+    if len(salt_srv) != 16:
+        raise ValueError("salt_srv deve ter exatamente 16 bytes")
     
     # Deriva as chaves de envio e recebimento para comunicação E2E com o peer
-    key_send, key_recv, iv_base_send = derive_e2e_keys(sk_a, peer_pk_bytes, client_id, peer_id_bytes, pair_salt)
+    key_send, key_recv, iv_base_send = derive_e2e_keys(
+        sk_a, peer_pk_bytes, client_id, peer_id_bytes, salt_srv
+    )
     public_key_b = deserialize_public_key(peer_pk_bytes)
 
     async with client_lock:
         existing_peer = peers.get(peer_id_str)
         if existing_peer is not None:
             existing_public_key_bytes = serialize_public_key(existing_peer["public_key_b"])
-            if existing_public_key_bytes != peer_pk_bytes:
-                raise ValueError(
-                    f"A chave pública anunciada para {peer_id_str} mudou durante a sessão"
-                )
-            return
+            if existing_public_key_bytes == peer_pk_bytes:
+                return
+            # Uma nova chave para o mesmo ID representa uma reconexão.
+            # Reiniciar o estado impede reutilização de seq_no e nonce.
 
         peers[peer_id_str] = {
             "public_key_b": public_key_b,
@@ -142,6 +148,48 @@ async def add_peer(
             "IV_base_send": iv_base_send,
             "IV_base_recv": None,
         }
+
+
+async def apply_admin_frame(
+    frame: bytes,
+    client_id: bytes,
+    sk_a: X25519PrivateKey,
+    _session_salt: bytes | None,
+    pinned_cert_path: str = "certs/server.crt",
+):
+    announcement = verify_admin_frame(
+        frame,
+        pinned_cert_path,
+        client_id,
+        None,
+    )
+    replay_key = (
+        announcement.salt_srv,
+        announcement.announced_id,
+        announcement.recipient_id,
+    )
+    last_seq = admin_last_seq.get(replay_key, -1)
+    if announcement.seq_admin <= last_seq:
+        raise ValueError("replay rejected: anúncio administrativo repetido")
+
+    peer_id_str = format_client_id(announcement.announced_id)
+    if announcement.announcement_type == ADMIN_LEAVE:
+        async with client_lock:
+            peers.pop(peer_id_str, None)
+            history.setdefault("*", []).append(
+                {"sender": "*", "message": f"{peer_id_str} saiu."}
+            )
+    else:
+        await add_peer(
+            peer_id_str,
+            announcement.announced_id,
+            announcement.public_key,
+            client_id,
+            sk_a,
+            announcement.salt_srv,
+        )
+    admin_last_seq[replay_key] = announcement.seq_admin
+    return announcement
 
 
 async def send_chat_message(
@@ -181,6 +229,7 @@ async def receive_messages(
     reader: asyncio.StreamReader,
     id_a: bytes,
     sk_a: X25519PrivateKey,
+    salt_srv: bytes,
 ) -> None:
     """Recebe frames do servidor e atualiza peers e histórico de mensagens."""
 
@@ -195,25 +244,17 @@ async def receive_messages(
                 )
             return
 
-        # Se for framde saida/entrada de peer. [ID 16B] + [pk_b 32B].
-        if len(payload) == REGISTRATION_FRAME_SIZE:
-            peer_id_bytes = payload[:16]
-            peer_id_str = format_client_id(peer_id_bytes)
-            peer_pk_bytes = payload[16:]
-
-            ## Se for a chave especial de saída, remove o peer do dicionário e registra a saída no histórico.
-            if peer_pk_bytes == PEER_LEAVE_PUBLIC_KEY:
+        if payload.startswith(ADMIN_MAGIC):
+            try:
+                await apply_admin_frame(payload, id_a, sk_a, salt_srv)
+            except (ValueError, InvalidSignature) as e:
                 async with client_lock:
-                    if peers.get(peer_id_str) is not None:
-                        peers.pop(peer_id_str)
-                        history.setdefault("*", []).append({"sender": "*", "message": f"{peer_id_str} saiu."})
-            else:
-                # Se for um anúncio de peer, tenta adicioná-lo.
-                try:
-                    await add_peer(peer_id_str, peer_id_bytes, peer_pk_bytes, id_a, sk_a)
-                except ValueError as e:
-                    async with client_lock:
-                        history.setdefault("*", []).append({"sender": "*", "message": f"Falha ao adicionar {peer_id_str}: {e}"})
+                    history.setdefault("*", []).append(
+                        {
+                            "sender": "*",
+                            "message": f"Anúncio administrativo inválido: {e}",
+                        }
+                    )
         # Se não for anúncio de peer e for menor que 68 bytes, é um frame inválido.
         elif len(payload) < MIN_E2E_FRAME_SIZE:
             async with client_lock:

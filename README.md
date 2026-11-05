@@ -109,12 +109,11 @@ Quando a especificação do PDF e a implementação diferem, a diferença é ind
 
 ### Preparação do servidor
 
-Ao iniciar, o servidor gera um novo par RSA. A chave privada fica apenas na
-memória do processo servidor; somente o certificado público é gravado em
-`certs/server.crt`, que o cliente usa como referência ao validar o handshake.
-O cliente deve ser iniciado depois do servidor para ler o certificado recém
-gerado. Como o certificado muda a cada inicialização, isso não representa uma
-identidade persistente nem um pin independente do servidor.
+Ao iniciar pela primeira vez, o servidor gera um par RSA e grava o certificado
+público em `certs/server.crt` e a chave privada local em `certs/server.key`.
+Nos próximos inícios, ambos são reutilizados; a chave privada nunca é enviada
+pela rede nem registrada nos logs. O cliente usa `certs/server.crt` como
+certificado pinado durante o handshake.
 
 ### Fase 1 — Inicialização e registro do cliente
 
@@ -141,8 +140,9 @@ O servidor recebe e valida o frame de registro, gera um `salt_srv` aleatório de
 pk_S || pk_C || client_id || salt_srv
 ```
 
-`pk_S` é a chave pública RSA extraída do certificado. O servidor assina esse
-material com RSA-PSS e SHA-256, usando a chave privada mantida em memória, e
+`pk_S` é a chave pública RSA extraída do certificado. O servidor calcula
+`H = SHA256(pk_S || pk_C || client_id || salt_srv)` e assina explicitamente
+esse digest com RSA-PSS e SHA-256, usando a chave privada mantida em memória, e
 responde:
 
 ```text
@@ -154,36 +154,37 @@ prefixo de tamanho (4B) ||
 O cliente compara o certificado recebido com `certs/server.crt`, reconstrói o
 material com seu próprio `pk_C` e `client_id` e verifica a assinatura com
 `pk_S`. Se o certificado ou a assinatura não corresponder, o handshake é
-interrompido (*fail-closed*). Como o certificado usado como referência é
-regenerado pelo servidor a cada inicialização, essa comparação valida a
-consistência com o arquivo compartilhado local; não é uma identidade
-persistentemente pinada nem protege contra um processo local capaz de alterar
-esse arquivo. O material assinado trafega em claro: a assinatura comprova
-integridade, mas não cifra os dados.
+interrompido (*fail-closed*). O certificado é persistente e deve ser
+provisionado fora do canal inseguro; na primeira execução do servidor, ele e a
+chave privada local são gerados, e os arquivos não são versionados no Git. O
+material assinado trafega em claro: a assinatura comprova integridade, mas não
+cifra os dados.
 
-O `salt_srv` autentica e identifica essa resposta do handshake. Na derivação
-E2E descrita abaixo, a implementação atual não o usa como salt comum entre os
-dois peers.
+O `salt_srv` autentica e identifica essa resposta do handshake. Ele é gerado
+novamente para cada conexão registrada. Quando um peer é anunciado, o servidor
+inclui o salt do handshake que criou aquele par; os dois clientes usam esse
+mesmo salt somente para derivar as chaves daquela relação.
 
 ### Fase 3 — Registro da sessão e anúncios de peers
 
 Depois de responder ao handshake, o servidor entra em `sessions_lock`, envia
-ao cliente novo a quantidade de peers online e, em seguida, um frame de 48
-bytes (`client_id || pk_client`) para cada peer existente. Também envia o
-registro do cliente novo aos clientes que já estavam conectados. Só depois
-desses envios o servidor insere a nova sessão em `sessions`, com `seq_send=0`,
-`seq_recv=-1` e o `salt_srv` do handshake.
+ao cliente novo a quantidade de peers online e, em seguida, um frame
+administrativo assinado e endereçado para cada peer existente. Também envia um
+frame separado, assinado e endereçado, do cliente novo a cada cliente já
+conectado. O frame administrativo contém tipo (`JOIN`, `ROTATE` ou `LEAVE`),
+`seq_admin`, `announced_id`, `recipient_id`, chave X25519 (ou sentinela de
+saída), `salt_srv` e assinatura RSA-PSS.
 
-O cliente novo lê cada anúncio inicial e deriva chaves para cada peer. Os
-clientes já conectados recebem o anúncio do novo cliente no loop de recepção e
-fazem a mesma derivação. Os anúncios de saída usam o ID do cliente seguido por
-32 bytes zero (`PEER_LEAVE_PUBLIC_KEY`).
+O contador `seq_admin` é monotônico por processo do servidor, começa em zero e
+é alocado sob `sessions_lock`; cada destinatário recebe seu próprio frame e
+seu próprio número. O cliente verifica o certificado pinado, o destinatário,
+o salt, a assinatura e o contador antes de derivar, substituir ou remover um
+peer. Frames administrativos legados sem assinatura são rejeitados.
 
-Esses anúncios são frames de controle, não mensagens E2E, e não possuem
-assinatura nem MAC individual nesta implementação. Portanto, o handshake
-autentica a resposta inicial do servidor, mas não autentica criptograficamente
-cada chave pública de peer anunciada depois. Um servidor que substitua esses
-anúncios poderia tentar intermediar a derivação E2E.
+Um servidor comprometido ainda pode assinar anúncios falsos, pois possui a
+chave RSA privada. A assinatura protege contra adulteração ou MITM no canal,
+não contra comprometimento do servidor; fingerprints distribuídos fora de
+banda ficam como trabalho futuro.
 
 ### Fase 4 — Derivação das chaves E2E para cada peer
 
@@ -200,21 +201,18 @@ Conceitualmente, isso corresponde a `PK_A = sk_A · G`,
 sk_B · (sk_A · G)`. Na implementação, cada lado chama
 `private_key.exchange(public_key)`.
 
-O código calcula um salt determinístico comum ao par, ordenando os IDs
-binários:
+O servidor fornece um `salt_srv` aleatório de 16 bytes, autenticado pela
+assinatura do handshake. O salt usado por um par é transportado no anúncio
+administrativo assinado que estabelece esse par:
 
 ```text
-pair_salt = SHA256(
-    b"WhatsUp E2E" || min(client_id_A, client_id_B) ||
-    max(client_id_A, client_id_B)
-)
+pair_salt = announcement.salt_srv
 ```
 
 Com `Z_AB` e `pair_salt`, HKDF-SHA256 deriva duas chaves de 16 bytes, usando os
-rótulos `b"A"` e `b"B"`. O menor ID do par é A; a chave A é usada no sentido
+rótulos `b"A2B"` e `b"B2A"`. O menor ID do par é A; a chave A é usada no sentido
 A→B e a chave B no sentido B→A. Cada cliente escolhe sua chave de envio e
-recepção conforme sua posição no par. Isso difere do PDF, que descreve o uso
-de `salt_srv` e os rótulos `A2B` e `B2A`.
+recepção conforme sua posição no par.
 
 Para cada peer, o cliente também gera um `IV_base_send` aleatório de 4 bytes e
 inicializa `seq_send=0`, `seq_recv=-1` e `IV_base_recv=None`. O segredo
@@ -305,11 +303,12 @@ aceito.
 
 ## Assinatura digital não é criptografia
 
-Quando o servidor assina
-`pk_S || pk_C || client_id || salt_srv` com a chave privada RSA mantida em
-memória, ele não cifra esses dados. A assinatura permite verificar a
-integridade e a correspondência com a chave pública do certificado; o
-conteúdo assinado e o certificado trafegam em claro junto dela.
+Quando o servidor calcula
+`H = SHA256(pk_S || pk_C || client_id || salt_srv)` e assina esse digest com a
+chave privada RSA mantida em memória, ele não cifra os dados originais. A
+assinatura permite verificar a integridade e a correspondência com a chave
+pública do certificado; o material e o certificado trafegam em claro junto
+dela.
 
 A resposta do handshake contém:
 
@@ -322,10 +321,10 @@ A resposta do handshake contém:
 ```
 
 O cliente compara o certificado recebido com o arquivo local e verifica a
-assinatura RSA-PSS com a chave pública do certificado. Como esse arquivo é
-regenerado pelo próprio servidor a cada inicialização, essa validação não
-estabelece uma identidade duradoura do servidor. Ela também não autentica
-individualmente os anúncios de peers enviados depois.
+assinatura RSA-PSS com a chave pública do certificado. Como o certificado é
+persistente e provisionado fora do Git, essa validação estabelece o pinning
+local do servidor. O mesmo certificado é usado para verificar individualmente
+os anúncios administrativos de peers.
 
 ## Dicionário de termos e mapeamento com os estudos
 
@@ -337,7 +336,7 @@ individualmente os anúncios de peers enviados depois.
 | `Z_AB` | Segredo bruto compartilhado calculado via ECDH entre A e B. |
 | `salt_srv` | Salt aleatório gerado pelo servidor durante o handshake. |
 | `HKDF` | Função para derivar chaves de `Z_AB`. |
-| `server.crt` | Certificado autoassinado gerado a cada inicialização; contém a chave pública. |
+| `server.crt` | Certificado autoassinado persistente, provisionado fora do Git; contém a chave pública. |
 | `RSA-PSS` | Algoritmo de assinatura usado no handshake do servidor. | 
 | `AES-128-GCM` | Cifra AEAD que fornece confidencialidade e autenticação. |
 | `AAD` | Dados autenticados, mas não cifrados: remetente, destinatário e sequência. | 
@@ -387,17 +386,15 @@ do servidor e a identidade `tp3-server`. É público e pode ser compartilhado.
 A chave privada correspondente é usada para assinar o handshake e não deve ser
 compartilhada.
 
-Durante a inicialização, `server.py` chama `generate_server_credentials()`.
-Essa função gera um novo par RSA, mantém a chave privada em memória no processo
-servidor e grava somente o certificado público em `certs/server.crt`. A cada
-inicialização, o certificado anterior é substituído. O cliente precisa ser
-iniciado depois do servidor para ler o certificado atualizado.
+Durante a inicialização, `server.py` chama
+`load_or_generate_server_credentials()`. Na primeira execução, essa função gera
+o par RSA e grava `certs/server.crt` e `certs/server.key`; depois, reutiliza os
+dois arquivos. A chave privada permanece local, não é enviada pela rede nem
+registrada nos logs, e `server.key` é ignorado pelo Git.
 
 O cliente compara o certificado recebido no handshake com esse arquivo e usa a
-chave pública nele contida para verificar a assinatura RSA-PSS. Como o próprio
-servidor atualiza o arquivo usado pelo cliente, essa comparação não é um pin
-independente nem uma identidade persistente: um processo local que consiga
-alterar o arquivo também pode mudar a referência de confiança.
+chave pública nele contida para verificar a assinatura RSA-PSS. Como o certificado é persistente e não é regenerado a cada inicialização, essa
+comparação funciona como pinning local do servidor.
 
 ## FASE 1: Registro (Cliente)
 
@@ -418,7 +415,7 @@ Assim que o registro chega, o servidor responde provando quem é:
 1. Recebe `id_a` e `pk_a`.
 2. **Gera um `salt` aleatório** para esta sessão.
 4. **Monta o material do handshake:** `pk_S || pk_a || id_a || salt`.
-5. **Assina** esse material com **RSA-PSS + SHA-256**, usando sua chave privada.
+5. **Calcula** `H = SHA256(material)` e assina `H` com **RSA-PSS + SHA-256**, usando sua chave privada.
 6. **Responde ao cliente:** `(certificado, assinatura, salt)`.
 
 Por que assinar o material inteiro (e não só o salt)? Porque a assinatura "gruda" as peças: ela vale para **aquela** `pk_a`, **aquele** `id_a` e **aquele** salt, naquela ordem. Trocar qualquer byte invalida a verificação na FASE 3.
@@ -440,7 +437,7 @@ handshake, os dados e a assinatura trafegam em claro.
 ## FASE 3: Validação do handshake (Cliente)
 
 
-1. **Compara o certificado:** compara o `cert` recebido com o `certs/server.crt` gerado pelo servidor nesta inicialização. Diferente → **conexão encerrada**.
+1. **Compara o certificado:** compara o `cert` recebido com o `certs/server.crt` pinado localmente. Diferente → **conexão encerrada**.
 2. **Extrai `pk_S`** do certificado.
 3. **Remonta o material:** `pk_S || pk_a || id_a || salt` 
 4. **Verifica a assinatura** RSA-PSS com `pk_S`. Inválida → **conexão encerrada**.
@@ -453,23 +450,32 @@ Com o handshake validado, o servidor integra o cliente à rede:
 2. Envia o número de peers online* e os dados de cada um.
 3. A partir daqui o Cliente A sabe quem está online e com quais chaves públicas.
 
-> **Limitação**: O handshake das FASES 2–3 autentica o servidor, não os peers
+Os anúncios de peers também são assinados pelo servidor e verificados com o
+certificado pinado. Isso autentica a origem do anúncio contra atacantes de rede;
+não protege contra um servidor comprometido, que possui a chave privada RSA.
 
 ## FASE 5: Derivação das chaves E2E (Cliente A e Cliente B)
 
 Cada cliente, ao conhecer um peer, executa independentemente, e chegando ao mesmo resultado:
 
 1. **Calcula o segredo compartilhado:** `Z = sk.exchange(pk_do_peer)` com X25519. O Cliente A usa `sk_a` com `pk_b`; o Cliente B usa `sk_b` com `pk_a`. Ambos obtêm **os mesmos 32 bytes de `Z`** — que nunca trafegaram na rede.
-2. **Deriva o salt do par:** `pair_salt = SHA256(b"WhatsUp E2E" || min(id_a, id_b) || max(id_a, id_b))` — determinístico e **igual nos dois lados**, pois depende só dos ids (o menor id do par define quem é "A").
+2. **Usa o salt do par:** `pair_salt = announcement.salt_srv` — gerado no handshake que originou o anúncio, autenticado pelo servidor e igual nos dois lados.
 3. **Deriva as duas chaves de direção com HKDF-SHA256:**
-   - `key_A = HKDF(salt=pair_salt, info=b"A", length=16)`
+   - `key_A2B = HKDF(salt=pair_salt, info=b"A2B", length=16)`
    - `key_B2A = HKDF(salt=pair_salt, info=b"B2A", length=16)`
-4. **Define o papel pelo menor id:** se meu id < id do peer, sou o "A" deste par → `key_send = key_A` e `key_recv = key_B2A`; senão, o contrário. Cada direção usa **uma chave diferente** (full-duplex seguro).
+4. **Define o papel pelo menor id:** se meu id < id do peer, sou o "A" deste par → `key_send = key_A2B` e `key_recv = key_B2A`; senão, o contrário. Cada direção usa **uma chave diferente** (full-duplex seguro).
 5. **Gera o `IV_base_send`:** 4 bytes aleatórios — a base dos nonces desta direção (FASE 6).
 6. **Descarta `Z`:** o segredo bruto some da memória; só as chaves derivadas permanecem.
 7. **Registra o peer:** `peers[id_peer] = {key_send, key_recv, IV_base_send, seq_send = 0, seq_recv = -1}`.
 
-> **Divergência implementação × enunciado (PDF):** o enunciado do trabalho especifica derivar as chaves com o **`salt_srv`** (recebido na FASE 2) e os rótulos **`A2B`/`B2A`**. Esta implementação usa o **salt determinístico do par** e os rótulos `b"A"`/`b"B2A"`. O efeito criptográfico é equivalente (duas chaves independentes de 16 B, uma por direção), mas os valores derivados diferem — quem seguir o PDF à risca não interoperaria com esta implementação.
+O enunciado do trabalho especifica, e a implementação aplica, o uso do
+`salt_srv` por handshake e dos rótulos `A2B`/`B2A`.
+
+Quando um peer reconecta com o mesmo `client_id`, um anúncio `ROTATE` assinado
+com a nova chave substitui o estado anterior e reinicia os contadores E2E dessa
+sessão. O cliente mantém `last_seq` administrativo por
+`(salt_srv, announced_id, recipient_id)` entre reconexões do mesmo processo,
+rejeitando números iguais ou menores.
 
 ### Conceito: Diffie–Hellman em curvas elípticas (ECDH)
 
@@ -477,7 +483,7 @@ O problema que o DH resolve: **como duas partes que nunca se falaram criam um se
 
 ### Conceito: HKDF (função de derivação de chaves)
 
-O `Z` bruto não deve virar chave de cifra diretamente (pode ter vieses estruturais). O **HKDF** (HMAC-based Key Derivation Function, RFC 5869) o transforma em chaves de uso específico em duas etapas: **extract** (comprime a entropia de `Z` junto com o salt) e **expand** (expande para o tamanho desejado, temperado pelo `info`). O `info` — aqui os rótulos `b"A"` e `b"B2A"` — **separa os domínios**: derivar com rótulos diferentes produz chaves totalmente independentes mesmo com a mesma entrada. É por isso que uma direção não consegue decifrar o tráfego da outra.
+O `Z` bruto não deve virar chave de cifra diretamente (pode ter vieses estruturais). O **HKDF** (HMAC-based Key Derivation Function, RFC 5869) o transforma em chaves de uso específico em duas etapas: **extract** (comprime a entropia de `Z` junto com o salt) e **expand** (expande para o tamanho desejado, temperado pelo `info`). O `info` — aqui os rótulos `b"A2B"` e `b"B2A"` — **separa os domínios**: derivar com rótulos diferentes produz chaves totalmente independentes mesmo com a mesma entrada. É por isso que uma direção não consegue decifrar o tráfego da outra.
 
 ### Observações sobre X25519 e ECDH
 

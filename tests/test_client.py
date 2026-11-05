@@ -1,4 +1,5 @@
 import asyncio
+import secrets
 import unittest
 from unittest.mock import patch
 
@@ -51,6 +52,9 @@ class MemoryScreen:
 
 
 class TestClientPeerRegistration(unittest.TestCase):
+    def setUp(self):
+        self.salt_srv = secrets.token_bytes(16)
+
     def test_duplicate_peer_announcement_preserves_session_state(self):
         client_id = generate_client_id()
         peer_id = generate_client_id()
@@ -62,13 +66,15 @@ class TestClientPeerRegistration(unittest.TestCase):
 
         async def announce_peer():
             await add_peer(
-                peer_id_str, peer_id, public_key_bytes, client_id, sk
+                peer_id_str, peer_id, public_key_bytes, client_id, sk,
+                self.salt_srv,
             )
             peers[peer_id_str]["seq_send"] = 4
             peers[peer_id_str]["seq_recv"] = 3
             peers[peer_id_str]["IV_base_recv"] = b"\x01\x02\x03\x04"
             await add_peer(
-                peer_id_str, peer_id, public_key_bytes, client_id, sk
+                peer_id_str, peer_id, public_key_bytes, client_id, sk,
+                self.salt_srv,
             )
 
         with patch("client.peers", peers), patch("client.history", {}):
@@ -78,7 +84,7 @@ class TestClientPeerRegistration(unittest.TestCase):
         self.assertEqual(peers[peer_id_str]["seq_recv"], 3)
         self.assertEqual(peers[peer_id_str]["IV_base_recv"], b"\x01\x02\x03\x04")
 
-    def test_peer_announcement_with_changed_public_key_is_rejected(self):
+    def test_peer_reconnection_with_changed_public_key_restarts_state(self):
         client_id = generate_client_id()
         peer_id = generate_client_id()
         sk, _ = generate_key_pair()
@@ -90,21 +96,22 @@ class TestClientPeerRegistration(unittest.TestCase):
         async def announce_keys():
             await add_peer(
                 peer_id_str, peer_id, serialize_public_key(original_peer_pk),
-                client_id, sk
+                client_id, sk, self.salt_srv,
             )
-            with self.assertRaisesRegex(ValueError, "chave pública.*mudou"):
-                await add_peer(
-                    peer_id_str, peer_id, serialize_public_key(replacement_peer_pk),
-                    client_id, sk
-                )
+            await add_peer(
+                peer_id_str, peer_id, serialize_public_key(replacement_peer_pk),
+                client_id, sk, self.salt_srv,
+            )
 
         with patch("client.peers", peers), patch("client.history", {}):
             asyncio.run(announce_keys())
 
         self.assertEqual(
             serialize_public_key(peers[peer_id_str]["public_key_b"]),
-            serialize_public_key(original_peer_pk),
+            serialize_public_key(replacement_peer_pk),
         )
+        self.assertEqual(peers[peer_id_str]["seq_send"], 0)
+        self.assertEqual(peers[peer_id_str]["seq_recv"], -1)
 
     def test_peers_derive_matching_keys_and_exchange_message(self):
         client_a_id = generate_client_id()
@@ -120,12 +127,14 @@ class TestClientPeerRegistration(unittest.TestCase):
         with patch("client.peers", peers_a), patch("client.history", {}):
             asyncio.run(add_peer(
                 client_a_peer_id, client_b_id,
-                serialize_public_key(client_b_pk), client_a_id, client_a_sk
+                serialize_public_key(client_b_pk), client_a_id, client_a_sk,
+                self.salt_srv,
             ))
         with patch("client.peers", peers_b), patch("client.history", {}):
             asyncio.run(add_peer(
                 client_b_peer_id, client_a_id,
-                serialize_public_key(client_a_pk), client_b_id, client_b_sk
+                serialize_public_key(client_a_pk), client_b_id, client_b_sk,
+                self.salt_srv,
             ))
 
         plaintext = b"Mensagem entre clientes"
@@ -158,7 +167,8 @@ class TestClientPeerRegistration(unittest.TestCase):
 
         async def send_messages():
             await add_peer(
-                peer_id_str, peer_id, serialize_public_key(peer_pk), client_id, sk
+                peer_id_str, peer_id, serialize_public_key(peer_pk), client_id, sk,
+                self.salt_srv,
             )
             await send_chat_message(
                 writer, client_id, peer_id_str, "Oi"
@@ -180,7 +190,8 @@ class TestClientPeerRegistration(unittest.TestCase):
         with patch("client.peers", receiver_peers), patch("client.history", {}):
             asyncio.run(add_peer(
                 format_client_id(client_id), client_id,
-                serialize_public_key(client_pk), peer_id, peer_sk
+                serialize_public_key(client_pk), peer_id, peer_sk,
+                self.salt_srv,
             ))
         received_messages = []
         for framed_data in writer.frames:
@@ -218,7 +229,7 @@ class TestClientPeerRegistration(unittest.TestCase):
             async def run_chat():
                 await add_peer(
                     peer_id_str, peer_id, serialize_public_key(peer_pk),
-                    client_id, sk
+                    client_id, sk, self.salt_srv,
                 )
                 await terminal_chat(writer, client_id)
 
