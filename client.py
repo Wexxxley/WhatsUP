@@ -16,7 +16,6 @@ from protocol.admin import (
     ADMIN_LEAVE,
     ADMIN_JOIN,
     ADMIN_MAGIC,
-    ADMIN_ROTATE,
     verify_admin_frame,
 )
 from protocol.crypto import (
@@ -86,7 +85,7 @@ async def main():
             announcement = await apply_admin_frame(
                 peer_frame, id_a, sk_a, salt_srv
             )
-            if announcement.announcement_type in (ADMIN_JOIN, ADMIN_ROTATE):
+            if announcement.announcement_type == ADMIN_JOIN:
                 print(f"Peer online: {format_client_id(announcement.announced_id)}")
 
     except Exception as e:
@@ -136,15 +135,15 @@ async def add_peer(
             existing_public_key_bytes = serialize_public_key(existing_peer["public_key_b"])
             if existing_public_key_bytes == peer_pk_bytes:
                 return
-            # Uma nova chave para o mesmo ID representa uma reconexão.
-            # Reiniciar o estado impede reutilização de seq_no e nonce.
+            # A chave mudou para um ID já conhecido; substitua o estado para
+            # iniciar novas sequências e nonces com a nova chave.
 
         peers[peer_id_str] = {
             "public_key_b": public_key_b,
             "key_send": key_send,
             "key_recv": key_recv,
-            "seq_send": 0,
-            "seq_recv": -1,
+            "seq_send": 0, # Seq da próxima msg enviada ao peer
+            "seq_recv": -1, # Seq da última msg recebida do peer
             "IV_base_send": iv_base_send,
             "IV_base_recv": None,
         }

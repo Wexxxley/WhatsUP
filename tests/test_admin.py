@@ -11,7 +11,6 @@ from client import apply_admin_frame
 from protocol.admin import (
     ADMIN_JOIN,
     ADMIN_LEAVE,
-    ADMIN_ROTATE,
     ADMIN_HEADER_SIZE,
     create_admin_frame,
     verify_admin_frame,
@@ -56,28 +55,25 @@ class TestAdministrativeFrames(unittest.TestCase):
             self.salt_srv,
         )
 
-    def test_valid_join_rotation_and_leave(self):
+    def test_valid_join_and_leave(self):
         join = verify_admin_frame(
             self.frame(ADMIN_JOIN, 0),
             self.cert_path,
             self.recipient_id,
             self.salt_srv,
         )
-        rotation = verify_admin_frame(
-            self.frame(ADMIN_ROTATE, 1),
-            self.cert_path,
-            self.recipient_id,
-            self.salt_srv,
-        )
         leave = verify_admin_frame(
-            self.frame(ADMIN_LEAVE, 2),
+            self.frame(ADMIN_LEAVE, 1),
             self.cert_path,
             self.recipient_id,
             self.salt_srv,
         )
         self.assertEqual(join.announcement_type, ADMIN_JOIN)
-        self.assertEqual(rotation.announcement_type, ADMIN_ROTATE)
         self.assertEqual(leave.announcement_type, ADMIN_LEAVE)
+
+    def test_unsupported_announcement_type_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Tipo de anúncio"):
+            self.frame(announcement_type=2)
 
     def test_each_recipient_gets_a_distinct_signed_frame(self):
         other_recipient = generate_client_id()

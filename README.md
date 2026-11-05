@@ -167,13 +167,18 @@ mesmo salt somente para derivar as chaves daquela relação.
 
 ### Fase 3 — Registro da sessão e anúncios de peers
 
-Depois de responder ao handshake, o servidor entra em `sessions_lock`, envia
-ao cliente novo a quantidade de peers online e, em seguida, um frame
-administrativo assinado e endereçado para cada peer existente. Também envia um
-frame separado, assinado e endereçado, do cliente novo a cada cliente já
-conectado. O frame administrativo contém tipo (`JOIN`, `ROTATE` ou `LEAVE`),
+Depois de validar o registro e confirmar que o `client_id` não está ativo, o
+servidor responde ao handshake e, sob `sessions_lock`, envia ao cliente novo a
+quantidade de peers online e, em seguida, um frame administrativo assinado e
+endereçado para cada peer existente. Também envia um frame separado, assinado
+e endereçado, do cliente novo a cada cliente já conectado. O frame
+administrativo contém tipo (`JOIN` ou `LEAVE`),
 `seq_admin`, `announced_id`, `recipient_id`, chave X25519 (ou sentinela de
 saída), `salt_srv` e assinatura RSA-PSS.
+
+Como `client_id` identifica unicamente uma sessão, o servidor rejeita uma nova
+conexão que tente usar um ID já ativo; ela não substitui nem rotaciona a sessão
+existente.
 
 O contador `seq_admin` é monotônico por processo do servidor, começa em zero e
 é alocado sob `sessions_lock`; cada destinatário recebe seu próprio frame e
@@ -418,7 +423,6 @@ Assim que o registro chega, o servidor responde provando quem é:
 5. **Calcula** `H = SHA256(material)` e assina `H` com **RSA-PSS + SHA-256**, usando sua chave privada.
 6. **Responde ao cliente:** `(certificado, assinatura, salt)`.
 
-Por que assinar o material inteiro (e não só o salt)? Porque a assinatura "gruda" as peças: ela vale para **aquela** `pk_a`, **aquele** `id_a` e **aquele** salt, naquela ordem. Trocar qualquer byte invalida a verificação na FASE 3.
 
 ### Conceito: assinatura digital
 
@@ -447,50 +451,75 @@ handshake, os dados e a assinatura trafegam em claro.
 Com o handshake validado, o servidor integra o cliente à rede:
 
 1. Sob a `sessions_lock` (`asyncio.Lock`) registra a sessão
-2. Envia o número de peers online* e os dados de cada um.
+2. Envia o número de peers online e os dados de cada um.
 3. A partir daqui o Cliente A sabe quem está online e com quais chaves públicas.
 
 Os anúncios de peers também são assinados pelo servidor e verificados com o
 certificado pinado. Isso autentica a origem do anúncio contra atacantes de rede;
 não protege contra um servidor comprometido, que possui a chave privada RSA.
 
-## FASE 5: Derivação das chaves E2E (Cliente A e Cliente B)
+## FASE 5: Derivação das chaves E2E
 
 Cada cliente, ao conhecer um peer, executa independentemente, e chegando ao mesmo resultado:
 
-1. **Calcula o segredo compartilhado:** `Z = sk.exchange(pk_do_peer)` com X25519. O Cliente A usa `sk_a` com `pk_b`; o Cliente B usa `sk_b` com `pk_a`. Ambos obtêm **os mesmos 32 bytes de `Z`** — que nunca trafegaram na rede.
-2. **Usa o salt do par:** `pair_salt = announcement.salt_srv` — gerado no handshake que originou o anúncio, autenticado pelo servidor e igual nos dois lados.
-3. **Deriva as duas chaves de direção com HKDF-SHA256:**
+1. **Calcula o segredo compartilhado:** `Z = sk.exchange(pk_do_peer)` com X25519. O Cliente A usa `sk_a` com `pk_b`; o Cliente B usa `sk_b` com `pk_a`. Ambos obtêm o mesmo segredo `Z`
+2. **Deriva as duas chaves de direção com HKDF:**
    - `key_A2B = HKDF(salt=pair_salt, info=b"A2B", length=16)`
    - `key_B2A = HKDF(salt=pair_salt, info=b"B2A", length=16)`
-4. **Define o papel pelo menor id:** se meu id < id do peer, sou o "A" deste par → `key_send = key_A2B` e `key_recv = key_B2A`; senão, o contrário. Cada direção usa **uma chave diferente** (full-duplex seguro).
-5. **Gera o `IV_base_send`:** 4 bytes aleatórios — a base dos nonces desta direção (FASE 6).
-6. **Descarta `Z`:** o segredo bruto some da memória; só as chaves derivadas permanecem.
-7. **Registra o peer:** `peers[id_peer] = {key_send, key_recv, IV_base_send, seq_send = 0, seq_recv = -1}`.
+3. **Define o papel pelo menor id:** se meu id < id do peer, sou o "A" deste par → `key_send = key_A2B` e `key_recv = key_B2A`; senão, o contrário. 
+4. **Gera o `IV_base_send`:** 4 bytes aleatórios, a base dos nonces desta direção.
 
-O enunciado do trabalho especifica, e a implementação aplica, o uso do
-`salt_srv` por handshake e dos rótulos `A2B`/`B2A`.
+### Conceito: Diffie–Hellman
 
-Quando um peer reconecta com o mesmo `client_id`, um anúncio `ROTATE` assinado
-com a nova chave substitui o estado anterior e reinicia os contadores E2E dessa
-sessão. O cliente mantém `last_seq` administrativo por
-`(salt_srv, announced_id, recipient_id)` entre reconexões do mesmo processo,
-rejeitando números iguais ou menores.
+**Como duas partes que nunca se falaram criam um segredo comum, olhando apenas mensagens públicas?**
 
-### Conceito: Diffie–Hellman em curvas elípticas (ECDH)
+No X25519, todos os participantes usam a mesma curva e o mesmo gerador. 
 
-O problema que o DH resolve: **como duas partes que nunca se falaram criam um segredo comum, olhando apenas mensagens públicas?** A resposta é a aritmética da troca: A calcula `Z = sk_a × pk_b` e B calcula `Z = sk_b × pk_a` — pelas propriedades da curva, os resultados são **iguais**, mas um observador que vê apenas `pk_a` e `pk_b` não consegue computar `Z` (problema do logaritmo discreto elíptico). O X25519 é a versão moderna e padronizada do ECDH sobre a curva Curve25519: chaves de 32 bytes, rápida e desenhada para resistir a ataques de side-channel de tempo.
+```text
+pk_A = sk_A · G
+pk_B = sk_B · G
+```
+Para obter o segredo compartilhado, cada lado combina seu escalar privado com a chave pública recebida:
 
-### Conceito: HKDF (função de derivação de chaves)
+```text
+Alice: Z_AB = sk_A · pk_B
+Bob:   Z_AB = sk_B · pk_A
+```
 
-O `Z` bruto não deve virar chave de cifra diretamente (pode ter vieses estruturais). O **HKDF** (HMAC-based Key Derivation Function, RFC 5869) o transforma em chaves de uso específico em duas etapas: **extract** (comprime a entropia de `Z` junto com o salt) e **expand** (expande para o tamanho desejado, temperado pelo `info`). O `info` — aqui os rótulos `b"A2B"` e `b"B2A"` — **separa os domínios**: derivar com rótulos diferentes produz chaves totalmente independentes mesmo com a mesma entrada. É por isso que uma direção não consegue decifrar o tráfego da outra.
+Ambos chegam ao mesmo ponto:
 
-### Observações sobre X25519 e ECDH
+```text
+sk_A · (sk_B · G) = sk_B · (sk_A · G)
+```
 
-- **Por que curvas elípticas?** Chaves curtas com segurança alta: 256 bits de curva equivalem a aproximadamente 3072 bits de RSA — e o X25519 usa chaves de apenas 32 bytes.
-- **Por que chaves efêmeras?** O par nasce no boot (FASE 1) e morre com a execução do cliente. Reiniciou, chaves novas — e, com UUIDs novos, salt do par e chaves de sessão também novos.
-- **`exchange()` é o DH:** `private_key.exchange(public_key)` devolve exatamente o segredo compartilhado de 32 bytes; a operação é simétrica — qualquer dos dois pares calcula o mesmo `Z`.
-- **`Z` é descartado de propósito** (passo 6): nada além das chaves HKDF deve depender dele. Menos segredos vivos em memória, menor superfície de vazamento.
+A figura abaixo ilustra a mesma ideia com o DH clássico usando `mod p`. 
+![](/public/dh.png)
+
+
+Suponha:
+- ID de Alice: `10`
+- ID de Bob: `20`
+- Ambos calculam o mesmo segredo ECDH: `Z`
+- Ambos usam o mesmo `pair_salt`
+
+A partir desses mesmos dados, os dois clientes derivam as mesmas duas chaves:
+
+```text
+key_A2B = 1111
+key_B2A = 2222
+```
+
+Em `derive_e2e_keys`, o menor ID determina a direção. Alice tem o ID menor, então:
+
+| Cliente | `key_send` | `key_recv` |
+|---|---:|---:|
+| Alice (ID `10`) | `1111` (`key_A2B`) | `2222` (`key_B2A`) |
+| Bob (ID `20`) | `2222` (`key_B2A`) | `1111` (`key_A2B`) |
+
+Assim:
+
+- Quando Alice envia para Bob, cifra com `1111`; Bob recebe e decifra com `1111`.
+- Quando Bob envia para Alice, cifra com `2222`; Alice recebe e decifra com `2222`.
 
 ## FASE 6: Cifragem E2E com AES-128-GCM (Cliente A)
 

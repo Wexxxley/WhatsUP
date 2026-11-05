@@ -11,7 +11,6 @@ from protocol.handshake import (
 from protocol.admin import (
     ADMIN_JOIN,
     ADMIN_LEAVE,
-    ADMIN_ROTATE,
     create_admin_frame,
 )
 from tools.generate_certificate import load_or_generate_server_credentials
@@ -130,42 +129,40 @@ async def registration(reader, writer):
         client_id_bytes,
     )
 
-    await send_frame(writer, handshake_response)
-    print(f"Handshake realizado com sucesso para o cliente {client_id_str}")
-
-    replaced_writer = None
     async with sessions_lock:
-        # Uma reconexão com o mesmo ID deve substituir a sessão anterior sem
-        # permitir que o encerramento tardio da conexão antiga remova a nova.
-        previous_session = sessions.pop(client_id_str, None)
-        if previous_session is not None:
-            replaced_writer = previous_session["writer"]
+        # O client_id identifica uma sessão única; não substituímos uma sessão ativa.
+        if client_id_str in sessions:
+            raise ValueError(f"client_id já conectado: {client_id_str}")
+
+        await send_frame(writer, handshake_response)
+        print(f"Handshake realizado com sucesso para o cliente {client_id_str}")
 
         # Enviar contagem de clientes online para que o cliente possa esperar x respostas
         num_peers = len(sessions)
         await send_frame(writer, num_peers.to_bytes(4, 'big'))
 
-        announcement_type = ADMIN_ROTATE if previous_session is not None else ADMIN_JOIN
         for existing_data in sessions.values():
+            # Enviar informações de cada peer existente para o novo cliente
             peer_info = create_admin_frame(
-                SERVER_PRIV_KEY,
-                ADMIN_JOIN,
-                _next_admin_seq(),
-                existing_data['client_id_bytes'],
-                client_id_bytes,
-                existing_data['pk_bytes'],
-                salt_srv,
+                server_private_key=SERVER_PRIV_KEY,
+                announcement_type=ADMIN_JOIN,
+                seq_admin=_next_admin_seq(),
+                announced_id=existing_data['client_id_bytes'],
+                recipient_id=client_id_bytes,
+                public_key=existing_data['pk_bytes'],
+                salt_srv=salt_srv,
             )
             await send_frame(writer, peer_info)
 
+            # Enviar informações do novo cliente para cada peer existente
             new_client_info = create_admin_frame(
-                SERVER_PRIV_KEY,
-                announcement_type,
-                _next_admin_seq(),
-                client_id_bytes,
-                existing_data['client_id_bytes'],
-                pk_c_bytes,
-                salt_srv,
+                server_private_key=SERVER_PRIV_KEY,
+                announcement_type=ADMIN_JOIN,
+                seq_admin=_next_admin_seq(),
+                announced_id=client_id_bytes,
+                recipient_id=existing_data['client_id_bytes'],
+                public_key=pk_c_bytes,
+                salt_srv=salt_srv,
             )
             await send_frame(existing_data['writer'], new_client_info)
 
@@ -180,12 +177,7 @@ async def registration(reader, writer):
             'salt': salt_srv
         }
 
-    if replaced_writer is not None:
-        replaced_writer.close()
-        await replaced_writer.wait_closed()
-
     return client_id_str, client_id_bytes, pk_c_bytes
-
 
 def _next_admin_seq() -> int:
     global ADMIN_SEQ
