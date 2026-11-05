@@ -174,12 +174,12 @@ def verify_admin_frame(
     frame: bytes,
     pinned_cert_path: str,
     expected_recipient_id: bytes,
-    expected_salt_srv: bytes,
+    expected_salt_srv: bytes | None,
 ) -> AdminAnnouncement:
     announcement = parse_admin_frame(frame)
     if announcement.recipient_id != expected_recipient_id:
         raise ValueError("Destinatário do anúncio administrativo não confere")
-    if announcement.salt_srv != expected_salt_srv:
+    if expected_salt_srv is not None and announcement.salt_srv != expected_salt_srv:
         raise ValueError("Salt do anúncio administrativo não confere")
 
     with open(pinned_cert_path, "rb") as certificate_file:

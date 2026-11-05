@@ -140,8 +140,9 @@ O servidor recebe e valida o frame de registro, gera um `salt_srv` aleatório de
 pk_S || pk_C || client_id || salt_srv
 ```
 
-`pk_S` é a chave pública RSA extraída do certificado. O servidor assina esse
-material com RSA-PSS e SHA-256, usando a chave privada mantida em memória, e
+`pk_S` é a chave pública RSA extraída do certificado. O servidor calcula
+`H = SHA256(pk_S || pk_C || client_id || salt_srv)` e assina explicitamente
+esse digest com RSA-PSS e SHA-256, usando a chave privada mantida em memória, e
 responde:
 
 ```text
@@ -159,9 +160,10 @@ chave privada local são gerados, e os arquivos não são versionados no Git. O
 material assinado trafega em claro: a assinatura comprova integridade, mas não
 cifra os dados.
 
-O `salt_srv` autentica e identifica essa resposta do handshake. Na derivação
-E2E descrita abaixo, ele é usado como salt comum entre os clientes da mesma
-execução do servidor.
+O `salt_srv` autentica e identifica essa resposta do handshake. Ele é gerado
+novamente para cada conexão registrada. Quando um peer é anunciado, o servidor
+inclui o salt do handshake que criou aquele par; os dois clientes usam esse
+mesmo salt somente para derivar as chaves daquela relação.
 
 ### Fase 3 — Registro da sessão e anúncios de peers
 
@@ -200,11 +202,11 @@ sk_B · (sk_A · G)`. Na implementação, cada lado chama
 `private_key.exchange(public_key)`.
 
 O servidor fornece um `salt_srv` aleatório de 16 bytes, autenticado pela
-assinatura do handshake, e todos os clientes da mesma execução o usam como
-salt comum:
+assinatura do handshake. O salt usado por um par é transportado no anúncio
+administrativo assinado que estabelece esse par:
 
 ```text
-pair_salt = salt_srv
+pair_salt = announcement.salt_srv
 ```
 
 Com `Z_AB` e `pair_salt`, HKDF-SHA256 deriva duas chaves de 16 bytes, usando os
@@ -301,11 +303,12 @@ aceito.
 
 ## Assinatura digital não é criptografia
 
-Quando o servidor assina
-`pk_S || pk_C || client_id || salt_srv` com a chave privada RSA mantida em
-memória, ele não cifra esses dados. A assinatura permite verificar a
-integridade e a correspondência com a chave pública do certificado; o
-conteúdo assinado e o certificado trafegam em claro junto dela.
+Quando o servidor calcula
+`H = SHA256(pk_S || pk_C || client_id || salt_srv)` e assina esse digest com a
+chave privada RSA mantida em memória, ele não cifra os dados originais. A
+assinatura permite verificar a integridade e a correspondência com a chave
+pública do certificado; o material e o certificado trafegam em claro junto
+dela.
 
 A resposta do handshake contém:
 
@@ -412,7 +415,7 @@ Assim que o registro chega, o servidor responde provando quem é:
 1. Recebe `id_a` e `pk_a`.
 2. **Gera um `salt` aleatório** para esta sessão.
 4. **Monta o material do handshake:** `pk_S || pk_a || id_a || salt`.
-5. **Assina** esse material com **RSA-PSS + SHA-256**, usando sua chave privada.
+5. **Calcula** `H = SHA256(material)` e assina `H` com **RSA-PSS + SHA-256**, usando sua chave privada.
 6. **Responde ao cliente:** `(certificado, assinatura, salt)`.
 
 Por que assinar o material inteiro (e não só o salt)? Porque a assinatura "gruda" as peças: ela vale para **aquela** `pk_a`, **aquele** `id_a` e **aquele** salt, naquela ordem. Trocar qualquer byte invalida a verificação na FASE 3.
@@ -456,7 +459,7 @@ não protege contra um servidor comprometido, que possui a chave privada RSA.
 Cada cliente, ao conhecer um peer, executa independentemente, e chegando ao mesmo resultado:
 
 1. **Calcula o segredo compartilhado:** `Z = sk.exchange(pk_do_peer)` com X25519. O Cliente A usa `sk_a` com `pk_b`; o Cliente B usa `sk_b` com `pk_a`. Ambos obtêm **os mesmos 32 bytes de `Z`** — que nunca trafegaram na rede.
-2. **Usa o salt do servidor:** `pair_salt = salt_srv` — aleatório por execução, autenticado no handshake e igual nos dois lados.
+2. **Usa o salt do par:** `pair_salt = announcement.salt_srv` — gerado no handshake que originou o anúncio, autenticado pelo servidor e igual nos dois lados.
 3. **Deriva as duas chaves de direção com HKDF-SHA256:**
    - `key_A2B = HKDF(salt=pair_salt, info=b"A2B", length=16)`
    - `key_B2A = HKDF(salt=pair_salt, info=b"B2A", length=16)`
@@ -466,7 +469,7 @@ Cada cliente, ao conhecer um peer, executa independentemente, e chegando ao mesm
 7. **Registra o peer:** `peers[id_peer] = {key_send, key_recv, IV_base_send, seq_send = 0, seq_recv = -1}`.
 
 O enunciado do trabalho especifica, e a implementação aplica, o uso do
-`salt_srv` e dos rótulos `A2B`/`B2A`.
+`salt_srv` por handshake e dos rótulos `A2B`/`B2A`.
 
 Quando um peer reconecta com o mesmo `client_id`, um anúncio `ROTATE` assinado
 com a nova chave substitui o estado anterior e reinicia os contadores E2E dessa

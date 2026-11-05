@@ -47,6 +47,22 @@ class TestHandshake(unittest.TestCase):
         self.assertEqual(len(verified_salt), 16)
         print("Teste positivo de handshake passou!")
 
+    def test_each_handshake_generates_an_independent_salt(self):
+        client_id = generate_client_id()
+        _, pk = generate_key_pair()
+        pk_bytes = serialize_public_key(pk)
+
+        _, first_salt = create_server_handshake_response(
+            self.priv_key, self.cert_bytes, pk_bytes, client_id
+        )
+        _, second_salt = create_server_handshake_response(
+            self.priv_key, self.cert_bytes, pk_bytes, client_id
+        )
+
+        self.assertEqual(len(first_salt), 16)
+        self.assertEqual(len(second_salt), 16)
+        self.assertNotEqual(first_salt, second_salt)
+
     def test_handshake_negative_signature_corruption(self):
         client_id = generate_client_id()
         _, pk = generate_key_pair()

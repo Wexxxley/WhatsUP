@@ -1,6 +1,7 @@
 import secrets
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.exceptions import InvalidSignature
 from protocol.spec import SALT_SIZE
@@ -49,14 +50,20 @@ def create_server_handshake_response(
     elif len(salt_srv) != SALT_SIZE:
         raise ValueError(f"salt_srv deve ter exatamente {SALT_SIZE} bytes")
     
-    # assina SHA256 (pk_server || pk_client || client_id || salt)    
+    # O protocolo define explicitamente H = SHA256(material) e a assinatura
+    # RSA-PSS sobre H. Prehashed evita que a biblioteca faça um segundo hash
+    # do digest já calculado.
+    material = pk_s_bytes + pk_c_bytes + client_id_bytes + salt_srv
+    digest = hashes.Hash(hashes.SHA256())
+    digest.update(material)
+    material_hash = digest.finalize()
     signature = server_priv_key.sign(
-        (pk_s_bytes + pk_c_bytes + client_id_bytes + salt_srv),
+        material_hash,
         padding.PSS(
             mgf=padding.MGF1(hashes.SHA256()),
             salt_length=padding.PSS.MAX_LENGTH
         ),
-        hashes.SHA256()
+        Prehashed(hashes.SHA256())
     )
     
     cert_len = len(server_cert_bytes)
@@ -114,17 +121,20 @@ def verify_server_handshake_response(
     pk_s_bytes = get_server_pubkey_bytes(server_cert)
     server_pub_key = server_cert.public_key()
     material = pk_s_bytes + pk_c_bytes + client_id_bytes + salt_srv
+    digest = hashes.Hash(hashes.SHA256())
+    digest.update(material)
+    material_hash = digest.finalize()
 
     # A chave pública verifica se a assinatura corresponde a esses dados.
     try:
         server_pub_key.verify(
             signature,
-            material,
+            material_hash,
             padding.PSS(
                 mgf=padding.MGF1(hashes.SHA256()),
                 salt_length=padding.PSS.MAX_LENGTH
             ),
-            hashes.SHA256()
+            Prehashed(hashes.SHA256())
         )
     except InvalidSignature as e:
         raise InvalidSignature("Assinatura do servidor inválida (RSA-PSS falhou)") from e

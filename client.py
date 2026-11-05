@@ -154,17 +154,17 @@ async def apply_admin_frame(
     frame: bytes,
     client_id: bytes,
     sk_a: X25519PrivateKey,
-    salt_srv: bytes,
+    _session_salt: bytes | None,
     pinned_cert_path: str = "certs/server.crt",
 ):
     announcement = verify_admin_frame(
         frame,
         pinned_cert_path,
         client_id,
-        salt_srv,
+        None,
     )
     replay_key = (
-        salt_srv,
+        announcement.salt_srv,
         announcement.announced_id,
         announcement.recipient_id,
     )
@@ -186,7 +186,7 @@ async def apply_admin_frame(
             announcement.public_key,
             client_id,
             sk_a,
-            salt_srv,
+            announcement.salt_srv,
         )
     admin_last_seq[replay_key] = announcement.seq_admin
     return announcement

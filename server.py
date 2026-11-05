@@ -1,5 +1,4 @@
 import asyncio
-import secrets
 from typing import TypedDict
 from cryptography.hazmat.primitives.asymmetric import rsa as rsa_types
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
@@ -38,7 +37,6 @@ sessions: dict[str, SessionData] = {} # id do cliente -> SessionData
 
 SERVER_PRIV_KEY: rsa_types.RSAPrivateKey | None = None
 SERVER_CERT_BYTES: bytes | None = None
-SERVER_SALT: bytes | None = None
 ADMIN_SEQ = 0
 
 # ---------------------------------------------------------------------------------
@@ -124,15 +122,12 @@ async def registration(reader, writer):
     client_id_str = format_client_id(client_id_bytes)
     pk_c = deserialize_public_key(pk_c_bytes)
 
-    # Executar handshake: assinar pk_S || pk_C || client_id || salt_srv
-    if SERVER_SALT is None:
-        raise RuntimeError("Salt do servidor não foi carregado")
+    # O handshake gera um salt novo para esta conexão.
     (handshake_response, salt_srv) = create_server_handshake_response(
         SERVER_PRIV_KEY,
         SERVER_CERT_BYTES,
         pk_c_bytes,
         client_id_bytes,
-        SERVER_SALT,
     )
 
     await send_frame(writer, handshake_response)
@@ -200,12 +195,10 @@ def _next_admin_seq() -> int:
 
 async def main():
     """Função principal do servidor responsável por inicializar o listener TCP."""
-    global SERVER_PRIV_KEY, SERVER_CERT_BYTES, SERVER_SALT
+    global SERVER_PRIV_KEY, SERVER_CERT_BYTES
 
     # Reutiliza a credencial pinada; gera-a somente no primeiro startup.
     SERVER_PRIV_KEY, SERVER_CERT_BYTES = load_or_generate_server_credentials()
-    SERVER_SALT = secrets.token_bytes(16)
-
     # Inicializa o servidor, passagem de handle_client como callback para cada nova conexão
     server = await asyncio.start_server(handle_client, '127.0.0.1', 8888)
     print("Servidor iniciado em 127.0.0.1:8888")
