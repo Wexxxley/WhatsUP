@@ -153,12 +153,11 @@ prefixo de tamanho (4B) ||
 O cliente compara o certificado recebido com `certs/server.crt`, reconstrói o
 material com seu próprio `pk_C` e `client_id` e verifica a assinatura com
 `pk_S`. Se o certificado ou a assinatura não corresponder, o handshake é
-interrompido (*fail-closed*). Como o certificado usado como referência é
-regenerado pelo servidor a cada inicialização, essa comparação valida a
-consistência com o arquivo compartilhado local; não é uma identidade
-persistentemente pinada nem protege contra um processo local capaz de alterar
-esse arquivo. O material assinado trafega em claro: a assinatura comprova
-integridade, mas não cifra os dados.
+interrompido (*fail-closed*). O certificado é persistente e deve ser
+provisionado fora do canal inseguro; na primeira execução do servidor, ele e a
+chave privada local são gerados, e os arquivos não são versionados no Git. O
+material assinado trafega em claro: a assinatura comprova integridade, mas não
+cifra os dados.
 
 O `salt_srv` autentica e identifica essa resposta do handshake. Na derivação
 E2E descrita abaixo, ele é usado como salt comum entre os clientes da mesma
@@ -167,22 +166,23 @@ execução do servidor.
 ### Fase 3 — Registro da sessão e anúncios de peers
 
 Depois de responder ao handshake, o servidor entra em `sessions_lock`, envia
-ao cliente novo a quantidade de peers online e, em seguida, um frame de 48
-bytes (`client_id || pk_client`) para cada peer existente. Também envia o
-registro do cliente novo aos clientes que já estavam conectados. Só depois
-desses envios o servidor insere a nova sessão em `sessions`, com `seq_send=0`,
-`seq_recv=-1` e o `salt_srv` do handshake.
+ao cliente novo a quantidade de peers online e, em seguida, um frame
+administrativo assinado e endereçado para cada peer existente. Também envia um
+frame separado, assinado e endereçado, do cliente novo a cada cliente já
+conectado. O frame administrativo contém tipo (`JOIN`, `ROTATE` ou `LEAVE`),
+`seq_admin`, `announced_id`, `recipient_id`, chave X25519 (ou sentinela de
+saída), `salt_srv` e assinatura RSA-PSS.
 
-O cliente novo lê cada anúncio inicial e deriva chaves para cada peer. Os
-clientes já conectados recebem o anúncio do novo cliente no loop de recepção e
-fazem a mesma derivação. Os anúncios de saída usam o ID do cliente seguido por
-32 bytes zero (`PEER_LEAVE_PUBLIC_KEY`).
+O contador `seq_admin` é monotônico por processo do servidor, começa em zero e
+é alocado sob `sessions_lock`; cada destinatário recebe seu próprio frame e
+seu próprio número. O cliente verifica o certificado pinado, o destinatário,
+o salt, a assinatura e o contador antes de derivar, substituir ou remover um
+peer. Frames administrativos legados sem assinatura são rejeitados.
 
-Esses anúncios são frames de controle, não mensagens E2E, e não possuem
-assinatura nem MAC individual nesta implementação. Portanto, o handshake
-autentica a resposta inicial do servidor, mas não autentica criptograficamente
-cada chave pública de peer anunciada depois. Um servidor que substitua esses
-anúncios poderia tentar intermediar a derivação E2E.
+Um servidor comprometido ainda pode assinar anúncios falsos, pois possui a
+chave RSA privada. A assinatura protege contra adulteração ou MITM no canal,
+não contra comprometimento do servidor; fingerprints distribuídos fora de
+banda ficam como trabalho futuro.
 
 ### Fase 4 — Derivação das chaves E2E para cada peer
 
@@ -318,10 +318,10 @@ A resposta do handshake contém:
 ```
 
 O cliente compara o certificado recebido com o arquivo local e verifica a
-assinatura RSA-PSS com a chave pública do certificado. Como esse arquivo é
-regenerado pelo próprio servidor a cada inicialização, essa validação não
-estabelece uma identidade duradoura do servidor. Ela também não autentica
-individualmente os anúncios de peers enviados depois.
+assinatura RSA-PSS com a chave pública do certificado. Como o certificado é
+persistente e provisionado fora do Git, essa validação estabelece o pinning
+local do servidor. O mesmo certificado é usado para verificar individualmente
+os anúncios administrativos de peers.
 
 ## Dicionário de termos e mapeamento com os estudos
 
@@ -333,7 +333,7 @@ individualmente os anúncios de peers enviados depois.
 | `Z_AB` | Segredo bruto compartilhado calculado via ECDH entre A e B. |
 | `salt_srv` | Salt aleatório gerado pelo servidor durante o handshake. |
 | `HKDF` | Função para derivar chaves de `Z_AB`. |
-| `server.crt` | Certificado autoassinado gerado a cada inicialização; contém a chave pública. |
+| `server.crt` | Certificado autoassinado persistente, provisionado fora do Git; contém a chave pública. |
 | `RSA-PSS` | Algoritmo de assinatura usado no handshake do servidor. | 
 | `AES-128-GCM` | Cifra AEAD que fornece confidencialidade e autenticação. |
 | `AAD` | Dados autenticados, mas não cifrados: remetente, destinatário e sequência. | 
@@ -434,7 +434,7 @@ handshake, os dados e a assinatura trafegam em claro.
 ## FASE 3: Validação do handshake (Cliente)
 
 
-1. **Compara o certificado:** compara o `cert` recebido com o `certs/server.crt` gerado pelo servidor nesta inicialização. Diferente → **conexão encerrada**.
+1. **Compara o certificado:** compara o `cert` recebido com o `certs/server.crt` pinado localmente. Diferente → **conexão encerrada**.
 2. **Extrai `pk_S`** do certificado.
 3. **Remonta o material:** `pk_S || pk_a || id_a || salt` 
 4. **Verifica a assinatura** RSA-PSS com `pk_S`. Inválida → **conexão encerrada**.
@@ -447,7 +447,9 @@ Com o handshake validado, o servidor integra o cliente à rede:
 2. Envia o número de peers online* e os dados de cada um.
 3. A partir daqui o Cliente A sabe quem está online e com quais chaves públicas.
 
-> **Limitação**: O handshake das FASES 2–3 autentica o servidor, não os peers
+Os anúncios de peers também são assinados pelo servidor e verificados com o
+certificado pinado. Isso autentica a origem do anúncio contra atacantes de rede;
+não protege contra um servidor comprometido, que possui a chave privada RSA.
 
 ## FASE 5: Derivação das chaves E2E (Cliente A e Cliente B)
 
@@ -466,9 +468,11 @@ Cada cliente, ao conhecer um peer, executa independentemente, e chegando ao mesm
 O enunciado do trabalho especifica, e a implementação aplica, o uso do
 `salt_srv` e dos rótulos `A2B`/`B2A`.
 
-Quando um peer reconecta com o mesmo `client_id`, o anúncio de uma nova chave
-substitui o estado anterior e reinicia os contadores dessa sessão. Isso permite
-derivar novas chaves E2E e impede reutilização de `seq_no` e nonce.
+Quando um peer reconecta com o mesmo `client_id`, um anúncio `ROTATE` assinado
+com a nova chave substitui o estado anterior e reinicia os contadores E2E dessa
+sessão. O cliente mantém `last_seq` administrativo por
+`(salt_srv, announced_id, recipient_id)` entre reconexões do mesmo processo,
+rejeitando números iguais ou menores.
 
 ### Conceito: Diffie–Hellman em curvas elípticas (ECDH)
 

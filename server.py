@@ -9,6 +9,12 @@ from protocol.keys import deserialize_public_key
 from protocol.handshake import (
     create_server_handshake_response
 )
+from protocol.admin import (
+    ADMIN_JOIN,
+    ADMIN_LEAVE,
+    ADMIN_ROTATE,
+    create_admin_frame,
+)
 from tools.generate_certificate import load_or_generate_server_credentials
 from protocol.spec import (
     MIN_E2E_FRAME_SIZE,
@@ -33,6 +39,7 @@ sessions: dict[str, SessionData] = {} # id do cliente -> SessionData
 SERVER_PRIV_KEY: rsa_types.RSAPrivateKey | None = None
 SERVER_CERT_BYTES: bytes | None = None
 SERVER_SALT: bytes | None = None
+ADMIN_SEQ = 0
 
 # ---------------------------------------------------------------------------------
 
@@ -77,10 +84,18 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 if current_session is not None and current_session["writer"] is writer:
                     sessions.pop(client_id_str, None)
 
-                    # Notificar pares restantes sobre a saída deste cliente.
-                    leave_frame = client_id_bytes + b"\x00" * X25519_KEY_SIZE
+                    # Notificar cada peer com um anúncio assinado e endereçado.
                     for other_data in sessions.values():
                         try:
+                            leave_frame = create_admin_frame(
+                                SERVER_PRIV_KEY,
+                                ADMIN_LEAVE,
+                                _next_admin_seq(),
+                                client_id_bytes,
+                                other_data["client_id_bytes"],
+                                b"\x00" * X25519_KEY_SIZE,
+                                current_session["salt"],
+                            )
                             await send_frame(other_data['writer'], leave_frame)
                         except (ConnectionError, asyncio.IncompleteReadError):
                             pass
@@ -121,7 +136,7 @@ async def registration(reader, writer):
     )
 
     await send_frame(writer, handshake_response)
-    print(f"Handshake realizado com sucesso para o cliente {client_id_str} (salt gerado)")
+    print(f"Handshake realizado com sucesso para o cliente {client_id_str}")
 
     replaced_writer = None
     async with sessions_lock:
@@ -135,13 +150,28 @@ async def registration(reader, writer):
         num_peers = len(sessions)
         await send_frame(writer, num_peers.to_bytes(4, 'big'))
 
-        for existing_id_str, existing_data in sessions.items():
-            # Envia peer para o novo cliente
-            peer_info = existing_data['client_id_bytes'] + existing_data['pk_bytes']
+        announcement_type = ADMIN_ROTATE if previous_session is not None else ADMIN_JOIN
+        for existing_data in sessions.values():
+            peer_info = create_admin_frame(
+                SERVER_PRIV_KEY,
+                ADMIN_JOIN,
+                _next_admin_seq(),
+                existing_data['client_id_bytes'],
+                client_id_bytes,
+                existing_data['pk_bytes'],
+                salt_srv,
+            )
             await send_frame(writer, peer_info)
 
-            # Envia o novo cliente para cada peer
-            new_client_info = client_id_bytes + pk_c_bytes
+            new_client_info = create_admin_frame(
+                SERVER_PRIV_KEY,
+                announcement_type,
+                _next_admin_seq(),
+                client_id_bytes,
+                existing_data['client_id_bytes'],
+                pk_c_bytes,
+                salt_srv,
+            )
             await send_frame(existing_data['writer'], new_client_info)
 
         # Registrar o novo cliente na tabela sessions
@@ -160,6 +190,13 @@ async def registration(reader, writer):
         await replaced_writer.wait_closed()
 
     return client_id_str, client_id_bytes, pk_c_bytes
+
+
+def _next_admin_seq() -> int:
+    global ADMIN_SEQ
+    seq_admin = ADMIN_SEQ
+    ADMIN_SEQ += 1
+    return seq_admin
 
 async def main():
     """Função principal do servidor responsável por inicializar o listener TCP."""

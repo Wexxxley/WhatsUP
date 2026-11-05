@@ -19,9 +19,11 @@ TAG_SIZE = 16               # Tag de autenticação do AES-GCM
 # Tamanhos de Frames específicos
 REGISTRATION_FRAME_SIZE = CLIENT_ID_SIZE + X25519_KEY_SIZE  # 48 bytes
 MIN_E2E_FRAME_SIZE = NONCE_SIZE + CLIENT_ID_SIZE + CLIENT_ID_SIZE + SEQUENCE_SIZE + TAG_SIZE  # 68 bytes
+ADMIN_HEADER_SIZE = 96
+ADMIN_SIGNATURE_LENGTH_SIZE = 2
+ADMIN_MIN_FRAME_SIZE = ADMIN_HEADER_SIZE + ADMIN_SIGNATURE_LENGTH_SIZE + 256
+ADMIN_MAX_FRAME_SIZE = MAX_FRAME_SIZE
 
-# Mensagens Administrativas / Controle de Peers (48 bytes)
-# Formato: [client_id 16B] || [pk_bytes 32B]
-# Se pk_bytes for PEER_LEAVE_PUBLIC_KEY, indica saída de peer (Leave).
-# Caso contrário, indica entrada/registro de peer (Join).
-PEER_LEAVE_PUBLIC_KEY = b"\x00" * X25519_KEY_SIZE
+# Frames administrativos assinados são definidos em protocol.admin.
+# O frame de registro continua sendo o único payload administrativo sem
+# assinatura, pois ocorre antes da autenticação do servidor.
