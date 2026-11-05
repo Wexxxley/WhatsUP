@@ -1,6 +1,5 @@
 import asyncio
 import curses
-import hashlib
 import locale
 import textwrap
 from uuid import UUID
@@ -84,7 +83,8 @@ async def main():
             peer_id_str = format_client_id(peer_client_id_bytes)
 
             await add_peer(
-                peer_id_str, peer_client_id_bytes, peer_pk_bytes, id_a, sk_a
+                peer_id_str, peer_client_id_bytes, peer_pk_bytes, id_a, sk_a,
+                salt_srv,
             )
             print(f"Peer online: {peer_id_str}")
 
@@ -94,7 +94,9 @@ async def main():
         await writer.wait_closed()
         return
 
-    receiver = asyncio.create_task(receive_messages(reader, id_a, sk_a)) # Tarefa assíncrona para receber mensagens de forma contínua 
+    receiver = asyncio.create_task(
+        receive_messages(reader, id_a, sk_a, salt_srv)
+    ) # Tarefa assíncrona para receber mensagens de forma contínua
     try:
         await terminal_chat(writer, id_a)
     except KeyboardInterrupt:
@@ -115,23 +117,26 @@ async def add_peer(
     peer_pk_bytes: bytes,
     client_id: bytes,
     sk_a: X25519PrivateKey,
+    salt_srv: bytes,
 ) -> None:
-    """Adiciona um peer novo, ignora anúncios repetidos e rejeita troca de chave."""
-    pair_salt = hashlib.sha256(b"WhatsUp E2E" + min(client_id, peer_id_bytes) + max(client_id, peer_id_bytes)).digest()
+    """Adiciona um peer usando o salt autenticado do handshake."""
+    if len(salt_srv) != 16:
+        raise ValueError("salt_srv deve ter exatamente 16 bytes")
     
     # Deriva as chaves de envio e recebimento para comunicação E2E com o peer
-    key_send, key_recv, iv_base_send = derive_e2e_keys(sk_a, peer_pk_bytes, client_id, peer_id_bytes, pair_salt)
+    key_send, key_recv, iv_base_send = derive_e2e_keys(
+        sk_a, peer_pk_bytes, client_id, peer_id_bytes, salt_srv
+    )
     public_key_b = deserialize_public_key(peer_pk_bytes)
 
     async with client_lock:
         existing_peer = peers.get(peer_id_str)
         if existing_peer is not None:
             existing_public_key_bytes = serialize_public_key(existing_peer["public_key_b"])
-            if existing_public_key_bytes != peer_pk_bytes:
-                raise ValueError(
-                    f"A chave pública anunciada para {peer_id_str} mudou durante a sessão"
-                )
-            return
+            if existing_public_key_bytes == peer_pk_bytes:
+                return
+            # Uma nova chave para o mesmo ID representa uma reconexão.
+            # Reiniciar o estado impede reutilização de seq_no e nonce.
 
         peers[peer_id_str] = {
             "public_key_b": public_key_b,
@@ -181,6 +186,7 @@ async def receive_messages(
     reader: asyncio.StreamReader,
     id_a: bytes,
     sk_a: X25519PrivateKey,
+    salt_srv: bytes,
 ) -> None:
     """Recebe frames do servidor e atualiza peers e histórico de mensagens."""
 
@@ -210,7 +216,10 @@ async def receive_messages(
             else:
                 # Se for um anúncio de peer, tenta adicioná-lo.
                 try:
-                    await add_peer(peer_id_str, peer_id_bytes, peer_pk_bytes, id_a, sk_a)
+                    await add_peer(
+                        peer_id_str, peer_id_bytes, peer_pk_bytes, id_a, sk_a,
+                        salt_srv,
+                    )
                 except ValueError as e:
                     async with client_lock:
                         history.setdefault("*", []).append({"sender": "*", "message": f"Falha ao adicionar {peer_id_str}: {e}"})

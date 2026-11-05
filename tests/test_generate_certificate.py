@@ -4,7 +4,10 @@ from pathlib import Path
 
 from cryptography import x509
 
-from tools.generate_certificate import generate_server_credentials
+from tools.generate_certificate import (
+    generate_server_credentials,
+    load_or_generate_server_credentials,
+)
 
 
 class TestServerCredentialGeneration(unittest.TestCase):
@@ -33,6 +36,29 @@ class TestServerCredentialGeneration(unittest.TestCase):
             )
             self.assertNotEqual(first_certificate, second_certificate)
             self.assertFalse((cert_dir / "server.key").exists())
+
+    def test_persistent_credentials_are_reused(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cert_dir = Path(temp_dir)
+            first_key, first_certificate = load_or_generate_server_credentials(cert_dir)
+            second_key, second_certificate = load_or_generate_server_credentials(cert_dir)
+
+            self.assertEqual(first_certificate, second_certificate)
+            self.assertEqual(
+                first_key.public_key().public_numbers(),
+                second_key.public_key().public_numbers(),
+            )
+            self.assertTrue((cert_dir / "server.key").exists())
+
+    def test_mismatched_persistent_credentials_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cert_dir = Path(temp_dir)
+            load_or_generate_server_credentials(cert_dir)
+            replacement_key, _ = generate_server_credentials(cert_dir)
+            self.assertTrue(replacement_key)
+
+            with self.assertRaisesRegex(ValueError, "não corresponde"):
+                load_or_generate_server_credentials(cert_dir)
 
 
 if __name__ == "__main__":

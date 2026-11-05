@@ -1,4 +1,5 @@
 import asyncio
+import secrets
 from typing import TypedDict
 from cryptography.hazmat.primitives.asymmetric import rsa as rsa_types
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
@@ -8,7 +9,7 @@ from protocol.keys import deserialize_public_key
 from protocol.handshake import (
     create_server_handshake_response
 )
-from tools.generate_certificate import generate_server_credentials
+from tools.generate_certificate import load_or_generate_server_credentials
 from protocol.spec import (
     MIN_E2E_FRAME_SIZE,
     REGISTRATION_FRAME_SIZE,
@@ -31,6 +32,7 @@ sessions: dict[str, SessionData] = {} # id do cliente -> SessionData
 
 SERVER_PRIV_KEY: rsa_types.RSAPrivateKey | None = None
 SERVER_CERT_BYTES: bytes | None = None
+SERVER_SALT: bytes | None = None
 
 # ---------------------------------------------------------------------------------
 
@@ -71,17 +73,21 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     finally:
         if client_id_str and client_id_bytes:
             async with sessions_lock:
-                sessions.pop(client_id_str, None)
+                current_session = sessions.get(client_id_str)
+                if current_session is not None and current_session["writer"] is writer:
+                    sessions.pop(client_id_str, None)
 
-                # Notificar pares restantes sobre a saída deste cliente (mensagem administrativa de saída)
-                leave_frame = client_id_bytes + b"\x00" * X25519_KEY_SIZE
-                for other_id_str, other_data in sessions.items():
-                    try:
-                        await send_frame(other_data['writer'], leave_frame)
-                    except Exception:
-                        pass
+                    # Notificar pares restantes sobre a saída deste cliente.
+                    leave_frame = client_id_bytes + b"\x00" * X25519_KEY_SIZE
+                    for other_data in sessions.values():
+                        try:
+                            await send_frame(other_data['writer'], leave_frame)
+                        except (ConnectionError, asyncio.IncompleteReadError):
+                            pass
 
-            print(f"Cliente {client_id_str} removido das sessões e peers notificados.")
+                    print(
+                        f"Cliente {client_id_str} removido das sessões e peers notificados."
+                    )
 
         # Garante o fechamento seguro dos recursos de rede ao finalizar a sessão
         writer.close()
@@ -104,12 +110,27 @@ async def registration(reader, writer):
     pk_c = deserialize_public_key(pk_c_bytes)
 
     # Executar handshake: assinar pk_S || pk_C || client_id || salt_srv
-    (handshake_response, salt_srv) = create_server_handshake_response(SERVER_PRIV_KEY, SERVER_CERT_BYTES, pk_c_bytes, client_id_bytes)
+    if SERVER_SALT is None:
+        raise RuntimeError("Salt do servidor não foi carregado")
+    (handshake_response, salt_srv) = create_server_handshake_response(
+        SERVER_PRIV_KEY,
+        SERVER_CERT_BYTES,
+        pk_c_bytes,
+        client_id_bytes,
+        SERVER_SALT,
+    )
 
     await send_frame(writer, handshake_response)
     print(f"Handshake realizado com sucesso para o cliente {client_id_str} (salt gerado)")
 
+    replaced_writer = None
     async with sessions_lock:
+        # Uma reconexão com o mesmo ID deve substituir a sessão anterior sem
+        # permitir que o encerramento tardio da conexão antiga remova a nova.
+        previous_session = sessions.pop(client_id_str, None)
+        if previous_session is not None:
+            replaced_writer = previous_session["writer"]
+
         # Enviar contagem de clientes online para que o cliente possa esperar x respostas
         num_peers = len(sessions)
         await send_frame(writer, num_peers.to_bytes(4, 'big'))
@@ -134,14 +155,19 @@ async def registration(reader, writer):
             'salt': salt_srv
         }
 
+    if replaced_writer is not None:
+        replaced_writer.close()
+        await replaced_writer.wait_closed()
+
     return client_id_str, client_id_bytes, pk_c_bytes
 
 async def main():
     """Função principal do servidor responsável por inicializar o listener TCP."""
-    global SERVER_PRIV_KEY, SERVER_CERT_BYTES
+    global SERVER_PRIV_KEY, SERVER_CERT_BYTES, SERVER_SALT
 
-    # Gera uma chave nova em memória e persiste apenas o certificado público.
-    SERVER_PRIV_KEY, SERVER_CERT_BYTES = generate_server_credentials()
+    # Reutiliza a credencial pinada; gera-a somente no primeiro startup.
+    SERVER_PRIV_KEY, SERVER_CERT_BYTES = load_or_generate_server_credentials()
+    SERVER_SALT = secrets.token_bytes(16)
 
     # Inicializa o servidor, passagem de handle_client como callback para cada nova conexão
     server = await asyncio.start_server(handle_client, '127.0.0.1', 8888)

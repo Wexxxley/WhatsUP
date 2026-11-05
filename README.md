@@ -109,12 +109,11 @@ Quando a especificação do PDF e a implementação diferem, a diferença é ind
 
 ### Preparação do servidor
 
-Ao iniciar, o servidor gera um novo par RSA. A chave privada fica apenas na
-memória do processo servidor; somente o certificado público é gravado em
-`certs/server.crt`, que o cliente usa como referência ao validar o handshake.
-O cliente deve ser iniciado depois do servidor para ler o certificado recém
-gerado. Como o certificado muda a cada inicialização, isso não representa uma
-identidade persistente nem um pin independente do servidor.
+Ao iniciar pela primeira vez, o servidor gera um par RSA e grava o certificado
+público em `certs/server.crt` e a chave privada local em `certs/server.key`.
+Nos próximos inícios, ambos são reutilizados; a chave privada nunca é enviada
+pela rede nem registrada nos logs. O cliente usa `certs/server.crt` como
+certificado pinado durante o handshake.
 
 ### Fase 1 — Inicialização e registro do cliente
 
@@ -162,8 +161,8 @@ esse arquivo. O material assinado trafega em claro: a assinatura comprova
 integridade, mas não cifra os dados.
 
 O `salt_srv` autentica e identifica essa resposta do handshake. Na derivação
-E2E descrita abaixo, a implementação atual não o usa como salt comum entre os
-dois peers.
+E2E descrita abaixo, ele é usado como salt comum entre os clientes da mesma
+execução do servidor.
 
 ### Fase 3 — Registro da sessão e anúncios de peers
 
@@ -200,21 +199,18 @@ Conceitualmente, isso corresponde a `PK_A = sk_A · G`,
 sk_B · (sk_A · G)`. Na implementação, cada lado chama
 `private_key.exchange(public_key)`.
 
-O código calcula um salt determinístico comum ao par, ordenando os IDs
-binários:
+O servidor fornece um `salt_srv` aleatório de 16 bytes, autenticado pela
+assinatura do handshake, e todos os clientes da mesma execução o usam como
+salt comum:
 
 ```text
-pair_salt = SHA256(
-    b"WhatsUp E2E" || min(client_id_A, client_id_B) ||
-    max(client_id_A, client_id_B)
-)
+pair_salt = salt_srv
 ```
 
 Com `Z_AB` e `pair_salt`, HKDF-SHA256 deriva duas chaves de 16 bytes, usando os
-rótulos `b"A"` e `b"B"`. O menor ID do par é A; a chave A é usada no sentido
+rótulos `b"A2B"` e `b"B2A"`. O menor ID do par é A; a chave A é usada no sentido
 A→B e a chave B no sentido B→A. Cada cliente escolhe sua chave de envio e
-recepção conforme sua posição no par. Isso difere do PDF, que descreve o uso
-de `salt_srv` e os rótulos `A2B` e `B2A`.
+recepção conforme sua posição no par.
 
 Para cada peer, o cliente também gera um `IV_base_send` aleatório de 4 bytes e
 inicializa `seq_send=0`, `seq_recv=-1` e `IV_base_recv=None`. O segredo
@@ -387,17 +383,15 @@ do servidor e a identidade `tp3-server`. É público e pode ser compartilhado.
 A chave privada correspondente é usada para assinar o handshake e não deve ser
 compartilhada.
 
-Durante a inicialização, `server.py` chama `generate_server_credentials()`.
-Essa função gera um novo par RSA, mantém a chave privada em memória no processo
-servidor e grava somente o certificado público em `certs/server.crt`. A cada
-inicialização, o certificado anterior é substituído. O cliente precisa ser
-iniciado depois do servidor para ler o certificado atualizado.
+Durante a inicialização, `server.py` chama
+`load_or_generate_server_credentials()`. Na primeira execução, essa função gera
+o par RSA e grava `certs/server.crt` e `certs/server.key`; depois, reutiliza os
+dois arquivos. A chave privada permanece local, não é enviada pela rede nem
+registrada nos logs, e `server.key` é ignorado pelo Git.
 
 O cliente compara o certificado recebido no handshake com esse arquivo e usa a
-chave pública nele contida para verificar a assinatura RSA-PSS. Como o próprio
-servidor atualiza o arquivo usado pelo cliente, essa comparação não é um pin
-independente nem uma identidade persistente: um processo local que consiga
-alterar o arquivo também pode mudar a referência de confiança.
+chave pública nele contida para verificar a assinatura RSA-PSS. Como o certificado é persistente e não é regenerado a cada inicialização, essa
+comparação funciona como pinning local do servidor.
 
 ## FASE 1: Registro (Cliente)
 
@@ -460,16 +454,21 @@ Com o handshake validado, o servidor integra o cliente à rede:
 Cada cliente, ao conhecer um peer, executa independentemente, e chegando ao mesmo resultado:
 
 1. **Calcula o segredo compartilhado:** `Z = sk.exchange(pk_do_peer)` com X25519. O Cliente A usa `sk_a` com `pk_b`; o Cliente B usa `sk_b` com `pk_a`. Ambos obtêm **os mesmos 32 bytes de `Z`** — que nunca trafegaram na rede.
-2. **Deriva o salt do par:** `pair_salt = SHA256(b"WhatsUp E2E" || min(id_a, id_b) || max(id_a, id_b))` — determinístico e **igual nos dois lados**, pois depende só dos ids (o menor id do par define quem é "A").
+2. **Usa o salt do servidor:** `pair_salt = salt_srv` — aleatório por execução, autenticado no handshake e igual nos dois lados.
 3. **Deriva as duas chaves de direção com HKDF-SHA256:**
-   - `key_A = HKDF(salt=pair_salt, info=b"A", length=16)`
+   - `key_A2B = HKDF(salt=pair_salt, info=b"A2B", length=16)`
    - `key_B2A = HKDF(salt=pair_salt, info=b"B2A", length=16)`
-4. **Define o papel pelo menor id:** se meu id < id do peer, sou o "A" deste par → `key_send = key_A` e `key_recv = key_B2A`; senão, o contrário. Cada direção usa **uma chave diferente** (full-duplex seguro).
+4. **Define o papel pelo menor id:** se meu id < id do peer, sou o "A" deste par → `key_send = key_A2B` e `key_recv = key_B2A`; senão, o contrário. Cada direção usa **uma chave diferente** (full-duplex seguro).
 5. **Gera o `IV_base_send`:** 4 bytes aleatórios — a base dos nonces desta direção (FASE 6).
 6. **Descarta `Z`:** o segredo bruto some da memória; só as chaves derivadas permanecem.
 7. **Registra o peer:** `peers[id_peer] = {key_send, key_recv, IV_base_send, seq_send = 0, seq_recv = -1}`.
 
-> **Divergência implementação × enunciado (PDF):** o enunciado do trabalho especifica derivar as chaves com o **`salt_srv`** (recebido na FASE 2) e os rótulos **`A2B`/`B2A`**. Esta implementação usa o **salt determinístico do par** e os rótulos `b"A"`/`b"B2A"`. O efeito criptográfico é equivalente (duas chaves independentes de 16 B, uma por direção), mas os valores derivados diferem — quem seguir o PDF à risca não interoperaria com esta implementação.
+O enunciado do trabalho especifica, e a implementação aplica, o uso do
+`salt_srv` e dos rótulos `A2B`/`B2A`.
+
+Quando um peer reconecta com o mesmo `client_id`, o anúncio de uma nova chave
+substitui o estado anterior e reinicia os contadores dessa sessão. Isso permite
+derivar novas chaves E2E e impede reutilização de `seq_no` e nonce.
 
 ### Conceito: Diffie–Hellman em curvas elípticas (ECDH)
 
@@ -477,7 +476,7 @@ O problema que o DH resolve: **como duas partes que nunca se falaram criam um se
 
 ### Conceito: HKDF (função de derivação de chaves)
 
-O `Z` bruto não deve virar chave de cifra diretamente (pode ter vieses estruturais). O **HKDF** (HMAC-based Key Derivation Function, RFC 5869) o transforma em chaves de uso específico em duas etapas: **extract** (comprime a entropia de `Z` junto com o salt) e **expand** (expande para o tamanho desejado, temperado pelo `info`). O `info` — aqui os rótulos `b"A"` e `b"B2A"` — **separa os domínios**: derivar com rótulos diferentes produz chaves totalmente independentes mesmo com a mesma entrada. É por isso que uma direção não consegue decifrar o tráfego da outra.
+O `Z` bruto não deve virar chave de cifra diretamente (pode ter vieses estruturais). O **HKDF** (HMAC-based Key Derivation Function, RFC 5869) o transforma em chaves de uso específico em duas etapas: **extract** (comprime a entropia de `Z` junto com o salt) e **expand** (expande para o tamanho desejado, temperado pelo `info`). O `info` — aqui os rótulos `b"A2B"` e `b"B2A"` — **separa os domínios**: derivar com rótulos diferentes produz chaves totalmente independentes mesmo com a mesma entrada. É por isso que uma direção não consegue decifrar o tráfego da outra.
 
 ### Observações sobre X25519 e ECDH
 

@@ -121,5 +121,23 @@ class TestHandshake(unittest.TestCase):
                 response, str(self.cert_path), client_pk_bytes, other_client_id
             )
 
+    def test_handshake_rejects_a_different_pinned_certificate(self):
+        client_id = generate_client_id()
+        _, client_pk = generate_key_pair()
+        client_pk_bytes = serialize_public_key(client_pk)
+
+        with tempfile.TemporaryDirectory() as other_dir:
+            other_cert_path = Path(other_dir) / "server.crt"
+            _, other_cert_bytes = generate_server_credentials(Path(other_dir))
+            other_cert_path.write_bytes(other_cert_bytes)
+            response, _ = create_server_handshake_response(
+                self.priv_key, self.cert_bytes, client_pk_bytes, client_id
+            )
+
+            with self.assertRaisesRegex(ValueError, "Pinning"):
+                verify_server_handshake_response(
+                    response, str(other_cert_path), client_pk_bytes, client_id
+                )
+
 if __name__ == "__main__":
     unittest.main()

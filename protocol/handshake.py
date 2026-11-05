@@ -29,7 +29,8 @@ def create_server_handshake_response(
     server_priv_key: rsa.RSAPrivateKey,
     server_cert_bytes: bytes,
     pk_c_bytes: bytes,
-    client_id_bytes: bytes
+    client_id_bytes: bytes,
+    salt_srv: bytes | None = None,
 ) -> tuple[bytes, bytes]:
     """
     1 - Gera o salt_srv
@@ -43,7 +44,10 @@ def create_server_handshake_response(
     pk_s_bytes = get_server_pubkey_bytes(cert)
     
     # Cria salt aleatório de 16 bytes para o handshake
-    salt_srv = secrets.token_bytes(16) 
+    if salt_srv is None:
+        salt_srv = secrets.token_bytes(SALT_SIZE)
+    elif len(salt_srv) != SALT_SIZE:
+        raise ValueError(f"salt_srv deve ter exatamente {SALT_SIZE} bytes")
     
     # assina SHA256 (pk_server || pk_client || client_id || salt)    
     signature = server_priv_key.sign(
