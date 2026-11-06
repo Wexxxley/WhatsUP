@@ -13,8 +13,8 @@ from protocol.admin import (
     ADMIN_LEAVE,
     create_admin_frame,
 )
-from tools.generate_certificate import load_or_generate_server_credentials
-from protocol.spec import (
+from tools.generate_certificate import generate_server_credentials
+from protocol.constants import (
     MIN_E2E_FRAME_SIZE,
     REGISTRATION_FRAME_SIZE,
     CLIENT_ID_SIZE,
@@ -36,7 +36,6 @@ sessions: dict[str, SessionData] = {} # id do cliente -> SessionData
 
 SERVER_PRIV_KEY: rsa_types.RSAPrivateKey | None = None
 SERVER_CERT_BYTES: bytes | None = None
-ADMIN_SEQ = 0
 
 # ---------------------------------------------------------------------------------
 
@@ -87,7 +86,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             leave_frame = create_admin_frame(
                                 SERVER_PRIV_KEY,
                                 ADMIN_LEAVE,
-                                _next_admin_seq(),
+                                _next_admin_seq(other_data),
                                 client_id_bytes,
                                 other_data["client_id_bytes"],
                                 b"\x00" * X25519_KEY_SIZE,
@@ -141,12 +140,22 @@ async def registration(reader, writer):
         num_peers = len(sessions)
         await send_frame(writer, num_peers.to_bytes(4, 'big'))
 
+        new_session: SessionData = {
+            'writer': writer,
+            'public_key': pk_c,
+            'client_id_bytes': client_id_bytes,
+            'pk_bytes': pk_c_bytes,
+            'seq_send': 0,
+            'seq_recv': -1,
+            'salt': salt_srv,
+        }
+
         for existing_data in sessions.values():
             # Enviar informações de cada peer existente para o novo cliente
             peer_info = create_admin_frame(
                 server_private_key=SERVER_PRIV_KEY,
                 announcement_type=ADMIN_JOIN,
-                seq_admin=_next_admin_seq(),
+                seq_admin=_next_admin_seq(new_session),
                 announced_id=existing_data['client_id_bytes'],
                 recipient_id=client_id_bytes,
                 public_key=existing_data['pk_bytes'],
@@ -158,7 +167,7 @@ async def registration(reader, writer):
             new_client_info = create_admin_frame(
                 server_private_key=SERVER_PRIV_KEY,
                 announcement_type=ADMIN_JOIN,
-                seq_admin=_next_admin_seq(),
+                seq_admin=_next_admin_seq(existing_data),
                 announced_id=client_id_bytes,
                 recipient_id=existing_data['client_id_bytes'],
                 public_key=pk_c_bytes,
@@ -167,30 +176,21 @@ async def registration(reader, writer):
             await send_frame(existing_data['writer'], new_client_info)
 
         # Registrar o novo cliente na tabela sessions
-        sessions[client_id_str] = {
-            'writer': writer,
-            'public_key': pk_c,
-            'client_id_bytes': client_id_bytes,
-            'pk_bytes': pk_c_bytes,
-            'seq_send': 0, # Seq da proxima msg enviada ao cliente
-            'seq_recv': -1, # Seq da ultima msg recebida do cliente
-            'salt': salt_srv
-        }
+        sessions[client_id_str] = new_session
 
     return client_id_str, client_id_bytes, pk_c_bytes
 
-def _next_admin_seq() -> int:
-    global ADMIN_SEQ
-    seq_admin = ADMIN_SEQ
-    ADMIN_SEQ += 1
+def _next_admin_seq(session: SessionData) -> int:
+    seq_admin = session['seq_send']
+    session['seq_send'] += 1
     return seq_admin
 
 async def main():
     """Função principal do servidor responsável por inicializar o listener TCP."""
     global SERVER_PRIV_KEY, SERVER_CERT_BYTES
 
-    # Reutiliza a credencial pinada; gera-a somente no primeiro startup.
-    SERVER_PRIV_KEY, SERVER_CERT_BYTES = load_or_generate_server_credentials()
+    # Gera uma nova identidade do servidor a cada inicialização.
+    SERVER_PRIV_KEY, SERVER_CERT_BYTES = generate_server_credentials()
     # Inicializa o servidor, passagem de handle_client como callback para cada nova conexão
     server = await asyncio.start_server(handle_client, '127.0.0.1', 8888)
     print("Servidor iniciado em 127.0.0.1:8888")

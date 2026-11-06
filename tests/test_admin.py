@@ -12,9 +12,14 @@ from client import apply_admin_frame
 from protocol.admin import (
     ADMIN_JOIN,
     ADMIN_LEAVE,
-    ADMIN_HEADER_SIZE,
     create_admin_frame,
     verify_admin_frame,
+)
+from protocol.constants import (
+    ADMIN_HEADER_SIZE,
+    ADMIN_MIN_FRAME_SIZE,
+    ADMIN_SIGNATURE_LENGTH_SIZE,
+    RSA_SIGNATURE_SIZE,
 )
 from protocol.keys import generate_key_pair, serialize_public_key
 from tools.generate_certificate import generate_server_credentials
@@ -54,6 +59,20 @@ class TestAdministrativeFrames(unittest.TestCase):
             public_key,
             self.salt_srv,
         )
+
+    def test_admin_frame_size_constants_match_generated_rsa_signature(self):
+        frame = self.frame()
+        signature_size = int.from_bytes(
+            frame[
+                ADMIN_HEADER_SIZE:
+                ADMIN_HEADER_SIZE + ADMIN_SIGNATURE_LENGTH_SIZE
+            ],
+            "big",
+        )
+
+        self.assertEqual(ADMIN_HEADER_SIZE, 94)
+        self.assertEqual(signature_size, RSA_SIGNATURE_SIZE)
+        self.assertEqual(len(frame), ADMIN_MIN_FRAME_SIZE)
 
     def test_valid_join_and_leave(self):
         join = verify_admin_frame(
@@ -188,6 +207,38 @@ class TestAdministrativeFrames(unittest.TestCase):
                 )
 
         self.assertNotIn(peer_id_str, peers)
+
+    def test_admin_sequence_replay_is_rejected_across_announced_peers(self):
+        client_private_key, _ = generate_key_pair()
+        first_frame = self.frame(ADMIN_JOIN, 0)
+        other_peer_id = uuid.uuid4().bytes
+        second_frame = create_admin_frame(
+            self.private_key,
+            ADMIN_JOIN,
+            0,
+            other_peer_id,
+            self.recipient_id,
+            self.peer_public_key,
+            self.salt_srv,
+        )
+
+        async def receive(frame):
+            await apply_admin_frame(
+                frame,
+                self.recipient_id,
+                client_private_key,
+                self.salt_srv,
+                self.cert_path,
+            )
+
+        with (
+            patch("client.peers", {}),
+            patch("client.history", {}),
+        ):
+            client.admin_last_seq.clear()
+            asyncio.run(receive(first_frame))
+            with self.assertRaisesRegex(ValueError, "replay rejected"):
+                asyncio.run(receive(second_frame))
 
     def test_forged_leave_does_not_remove_peer(self):
         client_private_key, _ = generate_key_pair()

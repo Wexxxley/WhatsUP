@@ -10,7 +10,7 @@ from protocol.crypto import (
     validate_and_decrypt_frame,
     MAX_PLAINTEXT_SIZE
 )
-from protocol.spec import MIN_E2E_FRAME_SIZE
+from protocol.constants import MIN_E2E_FRAME_SIZE
 
 class TestCrypto(unittest.TestCase):
     def test_e2e_key_derivation_symmetry(self):

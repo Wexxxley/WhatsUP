@@ -25,7 +25,7 @@ from protocol.crypto import (
     deserialize_public_key
 )
 from protocol.handshake import verify_server_handshake_response
-from protocol.spec import (
+from protocol.constants import (
     MIN_E2E_FRAME_SIZE
 )
 
@@ -43,8 +43,12 @@ class MessageEntry(TypedDict):
     message: str
 
 peers: dict[str, PeerData] = {}
-history: dict[str, list[MessageEntry]] = {} # Histórico de mensagens por peer. A lista de um chat específico armazena tanto as que você enviou quanto as que você recebeu daquele
-admin_last_seq: dict[tuple[bytes, bytes, bytes], int] = {}
+
+# Histórico de mensagens por peer.
+# A lista de um chat específico armazena tanto as que você enviou quanto as que você recebeu daquele
+
+history: dict[str, list[MessageEntry]] = {}
+admin_last_seq: dict[tuple[bytes, bytes], int] = {}
 
 client_lock = asyncio.Lock()
 
@@ -164,7 +168,6 @@ async def apply_admin_frame(
     )
     replay_key = (
         announcement.salt_srv,
-        announcement.announced_id,
         announcement.recipient_id,
     )
     last_seq = admin_last_seq.get(replay_key, -1)

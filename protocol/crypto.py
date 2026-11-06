@@ -5,7 +5,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from protocol.keys import deserialize_public_key
-from protocol.spec import (
+from protocol.constants import (
     MAX_PLAINTEXT_SIZE,
     MIN_E2E_FRAME_SIZE,
     NONCE_SIZE,

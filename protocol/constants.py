@@ -1,0 +1,26 @@
+import struct
+
+MAX_PLAINTEXT_SIZE = 4096 # limite de mensagem
+MAX_FRAME_SIZE = 4200 # limite de frame 
+
+CLIENT_ID_SIZE = 16         # UUID
+X25519_KEY_SIZE = 32        # Chave pública/privada X25519
+SALT_SIZE = 16              # Salt aleatório
+NONCE_SIZE = 12             # iv_base 4B + seq_no 8B
+SEQUENCE_SIZE = 8           # Contador de sequência
+TAG_SIZE = 16               # Tag de autenticação do AES-GCM
+
+RSA_KEY_SIZE_BITS = 3072
+RSA_SIGNATURE_SIZE = RSA_KEY_SIZE_BITS // 8
+
+# Tamanhos de Frames específicos
+REGISTRATION_FRAME_SIZE = CLIENT_ID_SIZE + X25519_KEY_SIZE  # 48 bytes
+MIN_E2E_FRAME_SIZE = NONCE_SIZE + CLIENT_ID_SIZE + CLIENT_ID_SIZE + SEQUENCE_SIZE + TAG_SIZE  # 68 bytes
+ADMIN_HEADER_FORMAT = "!4sBBQ16s16s32s16s"
+ADMIN_HEADER_SIZE = struct.calcsize(ADMIN_HEADER_FORMAT)
+ADMIN_SIGNATURE_LENGTH_SIZE = 2
+ADMIN_MIN_FRAME_SIZE = (
+    ADMIN_HEADER_SIZE + ADMIN_SIGNATURE_LENGTH_SIZE + RSA_SIGNATURE_SIZE
+)
+ADMIN_MAX_FRAME_SIZE = MAX_FRAME_SIZE
+

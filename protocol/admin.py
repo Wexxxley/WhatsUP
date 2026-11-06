@@ -6,9 +6,12 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from protocol.spec import (
+from protocol.constants import (
     ADMIN_MAX_FRAME_SIZE,
+    ADMIN_HEADER_FORMAT,
+    ADMIN_HEADER_SIZE,
     ADMIN_MIN_FRAME_SIZE,
+    ADMIN_SIGNATURE_LENGTH_SIZE,
     CLIENT_ID_SIZE,
     SALT_SIZE,
     X25519_KEY_SIZE,
@@ -19,9 +22,6 @@ ADMIN_VERSION = 1  # Versão do formato do frame; permite evoluir o protocolo.
 ADMIN_JOIN = 1  # Anúncio de que um cliente entrou.
 ADMIN_LEAVE = 3  # Anúncio de que um cliente saiu.
 ADMIN_TYPES = frozenset((ADMIN_JOIN, ADMIN_LEAVE))  # Tipos aceitos.
-ADMIN_HEADER_FORMAT = "!4sBBQ16s16s32s16s"  # ! = big-endian; campos: magic(4), versão(1), tipo(1), sequência(8), IDs(16+16), chave(32), salt(16) bytes.
-ADMIN_HEADER_SIZE = struct.calcsize(ADMIN_HEADER_FORMAT)  # Tamanho do cabeçalho em bytes (96).
-ADMIN_SIGNATURE_LENGTH_SIZE = 2  # Bytes usados para codificar o tamanho da assinatura.
 
 
 @dataclass(frozen=True)
