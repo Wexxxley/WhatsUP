@@ -58,6 +58,18 @@ Execute os testes unitários e de integração:
 python3 -m unittest discover -s tests
 ```
 
+Para uma demonstração didática de que o relay não possui a chave AES E2E,
+execute:
+
+```bash
+python -m tools.demo_e2e_server_cannot_decrypt
+```
+
+O script simula uma mensagem entre dois clientes, entrega ao "relay" apenas
+o frame e tenta decifrá-lo sem a chave derivada. A tentativa falha com
+`InvalidTag`. Isso demonstra a propriedade da implementação, embora nenhuma
+demonstração prática consiga provar uma impossibilidade matemática absoluta.
+
 ## Conceitos usados no protocolo
 
 ### Hash e AEAD
