@@ -2,6 +2,7 @@ import asyncio
 import curses
 import locale
 import textwrap
+import uuid
 from uuid import UUID
 from typing import TypedDict
 from cryptography.exceptions import InvalidSignature
@@ -10,7 +11,6 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PublicKey,
 )
 from protocol.framing import send_frame, recv_frame
-from protocol.ids import generate_client_id, format_client_id
 from protocol.keys import generate_key_pair, serialize_public_key
 from protocol.admin import (
     ADMIN_LEAVE,
@@ -57,8 +57,8 @@ async def main():
         history.clear()
     
     # Geração do ID do cliente
-    id_a = generate_client_id()
-    client_id_str = format_client_id(id_a)
+    id_a = uuid.uuid4().bytes
+    client_id_str = str(uuid.UUID(bytes=id_a))
     print(f"Meu client_id: {client_id_str}")
     
     # Geração das chaves pública e privada do cliente
@@ -86,7 +86,7 @@ async def main():
                 peer_frame, id_a, sk_a, salt_srv
             )
             if announcement.announcement_type == ADMIN_JOIN:
-                print(f"Peer online: {format_client_id(announcement.announced_id)}")
+                print(f"Peer online: {str(uuid.UUID(bytes=announcement.announced_id))}")
 
     except Exception as e:
         print(f"ERRO DE HANDSHAKE / DERIVAÇÃO DE CHAVES: {e}")
@@ -171,7 +171,7 @@ async def apply_admin_frame(
     if announcement.seq_admin <= last_seq:
         raise ValueError("replay rejected: anúncio administrativo repetido")
 
-    peer_id_str = format_client_id(announcement.announced_id)
+    peer_id_str = str(uuid.UUID(bytes=announcement.announced_id))
     if announcement.announcement_type == ADMIN_LEAVE:
         async with client_lock:
             peers.pop(peer_id_str, None)
@@ -200,7 +200,7 @@ async def send_chat_message(
     """Cifra e envia uma mensagem E2E para um peer conhecido."""
     sender_id_bytes = sender_id
     recipient_id_bytes = UUID(recipient_id).bytes
-    recipient_id_str = format_client_id(recipient_id_bytes)
+    recipient_id_str = str(uuid.UUID(bytes=recipient_id_bytes))
 
     async with client_lock:
         peer = peers.get(recipient_id_str)
@@ -219,7 +219,7 @@ async def send_chat_message(
         await send_frame(writer, frame)
         peer["seq_send"] = next_seq
         history.setdefault(recipient_id_str, []).append({
-            "sender": format_client_id(sender_id_bytes),
+            "sender": str(uuid.UUID(bytes=sender_id_bytes)),
             "message": message_text,
         })
 
@@ -381,7 +381,7 @@ def _draw_terminal(
         screen.refresh()
         return
 
-    _add_line(screen, 0, f"WhatsUp | {format_client_id(id_a)} | online: {len(peer_ids)}", width)
+    _add_line(screen, 0, f"WhatsUp | {str(uuid.UUID(bytes=id_a))} | online: {len(peer_ids)}", width)
     if active_peer is None:
         _add_line(screen, 1, "↑/↓ selecionar  Enter conversar  q sair", width)
         _add_line(screen, 2, "-" * (width - 1), width)
@@ -403,7 +403,7 @@ def _draw_terminal(
         for entry in conversation:
             sender = entry["sender"]
             message = entry["message"]
-            label = "Você" if sender == format_client_id(id_a) else sender
+            label = "Você" if sender == str(uuid.UUID(bytes=id_a)) else sender
             prefix = f"{label}: "
             lines = textwrap.wrap(
                 prefix + message, width=max(1, width - 2),

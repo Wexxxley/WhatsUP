@@ -1,9 +1,9 @@
 import asyncio
+import uuid
 from typing import TypedDict
 from cryptography.hazmat.primitives.asymmetric import rsa as rsa_types
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 from protocol.framing import send_frame, recv_frame
-from protocol.ids import format_client_id
 from protocol.keys import deserialize_public_key
 from protocol.handshake import (
     create_server_handshake_response
@@ -60,7 +60,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             # Roteamento E2E: se for frame E2E (>= MIN_E2E_FRAME_SIZE), encaminhar para o alvo_id
             if len(payload) >= MIN_E2E_FRAME_SIZE:
                 recipient_id_bytes = payload[NONCE_SIZE + CLIENT_ID_SIZE : NONCE_SIZE + 2 * CLIENT_ID_SIZE]
-                recipient_id_str = format_client_id(recipient_id_bytes)
+                recipient_id_str = str(uuid.UUID(bytes=recipient_id_bytes))
 
                 async with sessions_lock:
                     if recipient_id_str in sessions:
@@ -118,7 +118,7 @@ async def registration(reader, writer):
     client_id_bytes = registration_frame[:CLIENT_ID_SIZE]
     pk_c_bytes = registration_frame[CLIENT_ID_SIZE:]
 
-    client_id_str = format_client_id(client_id_bytes)
+    client_id_str = str(uuid.UUID(bytes=client_id_bytes))
     pk_c = deserialize_public_key(pk_c_bytes)
 
     # O handshake gera um salt novo para esta conexão.

@@ -1,8 +1,8 @@
 import unittest
 import secrets
+import uuid
 from cryptography.exceptions import InvalidTag
 from protocol.keys import generate_key_pair, serialize_public_key
-from protocol.ids import generate_client_id, format_client_id
 from protocol.crypto import (
     derive_e2e_keys,
     encrypt_e2e_message,
@@ -14,8 +14,8 @@ from protocol.spec import MIN_E2E_FRAME_SIZE
 
 class TestCrypto(unittest.TestCase):
     def test_e2e_key_derivation_symmetry(self):
-        id_a = generate_client_id()
-        id_b = generate_client_id()
+        id_a = uuid.uuid4().bytes
+        id_b = uuid.uuid4().bytes
         
         sk_a, pk_a = generate_key_pair()
         sk_b, pk_b = generate_key_pair()
@@ -42,8 +42,8 @@ class TestCrypto(unittest.TestCase):
         print("Teste de simetria e derivação de chaves E2E passou!")
 
     def test_different_salts_produce_different_keys(self):
-        id_a = generate_client_id()
-        id_b = generate_client_id()
+        id_a = uuid.uuid4().bytes
+        id_b = uuid.uuid4().bytes
         
         sk_a, pk_a = generate_key_pair()
         _, pk_b = generate_key_pair()
@@ -60,8 +60,8 @@ class TestCrypto(unittest.TestCase):
         print("Teste de salt diferente produzindo chaves distintas passou!")
 
     def test_e2e_encryption_decryption_roundtrip(self):
-        id_a = generate_client_id()
-        id_b = generate_client_id()
+        id_a = uuid.uuid4().bytes
+        id_b = uuid.uuid4().bytes
         
         sk_a, pk_a = generate_key_pair()
         sk_b, pk_b = generate_key_pair()
@@ -74,7 +74,7 @@ class TestCrypto(unittest.TestCase):
         _, key_recv_b, _ = derive_e2e_keys(sk_b, pk_a_bytes, id_b, id_a, salt_srv)
         
         peers_b = {
-            format_client_id(id_a): {
+            str(uuid.UUID(bytes=id_a)): {
                 "key_recv": key_recv_b,
                 "seq_recv": -1,
                 "IV_base_recv": None
@@ -86,15 +86,15 @@ class TestCrypto(unittest.TestCase):
         self.assertEqual(next_seq, 1)
         
         sender_str, dec_plaintext = validate_and_decrypt_frame(frame, id_b, peers_b)
-        self.assertEqual(sender_str, format_client_id(id_a))
+        self.assertEqual(sender_str, str(uuid.UUID(bytes=id_a)))
         self.assertEqual(dec_plaintext, plaintext)
-        self.assertEqual(peers_b[format_client_id(id_a)]["seq_recv"], 0)
-        self.assertEqual(peers_b[format_client_id(id_a)]["IV_base_recv"], iv_a)
+        self.assertEqual(peers_b[str(uuid.UUID(bytes=id_a))]["seq_recv"], 0)
+        self.assertEqual(peers_b[str(uuid.UUID(bytes=id_a))]["IV_base_recv"], iv_a)
         print("Teste de roundtrip e validação de frame passou!")
 
     def test_anti_replay_protection(self):
-        id_a = generate_client_id()
-        id_b = generate_client_id()
+        id_a = uuid.uuid4().bytes
+        id_b = uuid.uuid4().bytes
         
         sk_a, pk_a = generate_key_pair()
         sk_b, pk_b = generate_key_pair()
@@ -107,7 +107,7 @@ class TestCrypto(unittest.TestCase):
         _, key_recv_b, _ = derive_e2e_keys(sk_b, pk_a_bytes, id_b, id_a, salt_srv)
         
         peers_b = {
-            format_client_id(id_a): {
+            str(uuid.UUID(bytes=id_a)): {
                 "key_recv": key_recv_b,
                 "seq_recv": -1,
                 "IV_base_recv": None
@@ -126,12 +126,12 @@ class TestCrypto(unittest.TestCase):
         # Receber frame 0 com sucesso (seq_recv vira 0)
         sender, pt = validate_and_decrypt_frame(frame0, id_b, peers_b)
         self.assertEqual(pt, b"Msg 1")
-        self.assertEqual(peers_b[format_client_id(id_a)]["seq_recv"], 0)
+        self.assertEqual(peers_b[str(uuid.UUID(bytes=id_a))]["seq_recv"], 0)
 
         # Receber frame 1 com sucesso (seq_recv vira 1)
         sender, pt = validate_and_decrypt_frame(frame1, id_b, peers_b)
         self.assertEqual(pt, b"Msg 2")
-        self.assertEqual(peers_b[format_client_id(id_a)]["seq_recv"], 1)
+        self.assertEqual(peers_b[str(uuid.UUID(bytes=id_a))]["seq_recv"], 1)
 
         # Tentar reesviar frame 0 (Ataque de Replay: seq_no = 0 <= seq_recv = 1)
         with self.assertRaises(ValueError) as ctx:
@@ -140,8 +140,8 @@ class TestCrypto(unittest.TestCase):
         print("Teste de proteção anti-replay passou!")
 
     def test_out_of_order_sequence_is_rejected_without_advancing_state(self):
-        id_a = generate_client_id()
-        id_b = generate_client_id()
+        id_a = uuid.uuid4().bytes
+        id_b = uuid.uuid4().bytes
         sk_a, pk_a = generate_key_pair()
         sk_b, pk_b = generate_key_pair()
         salt_srv = secrets.token_bytes(16)
@@ -153,7 +153,7 @@ class TestCrypto(unittest.TestCase):
             sk_b, serialize_public_key(pk_a), id_b, id_a, salt_srv
         )
         peers_b = {
-            format_client_id(id_a): {
+            str(uuid.UUID(bytes=id_a)): {
                 "key_recv": key_recv_b,
                 "seq_recv": -1,
                 "IV_base_recv": None,
@@ -166,13 +166,13 @@ class TestCrypto(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "replay rejected"):
             validate_and_decrypt_frame(skipped_frame, id_b, peers_b)
 
-        peer_state = peers_b[format_client_id(id_a)]
+        peer_state = peers_b[str(uuid.UUID(bytes=id_a))]
         self.assertEqual(peer_state["seq_recv"], -1)
         self.assertIsNone(peer_state["IV_base_recv"])
 
     def test_changed_iv_base_is_rejected_without_advancing_state(self):
-        id_a = generate_client_id()
-        id_b = generate_client_id()
+        id_a = uuid.uuid4().bytes
+        id_b = uuid.uuid4().bytes
         sk_a, pk_a = generate_key_pair()
         sk_b, pk_b = generate_key_pair()
         salt_srv = secrets.token_bytes(16)
@@ -184,7 +184,7 @@ class TestCrypto(unittest.TestCase):
             sk_b, serialize_public_key(pk_a), id_b, id_a, salt_srv
         )
         peers_b = {
-            format_client_id(id_a): {
+            str(uuid.UUID(bytes=id_a)): {
                 "key_recv": key_recv_b,
                 "seq_recv": -1,
                 "IV_base_recv": None,
@@ -202,13 +202,13 @@ class TestCrypto(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "tag mismatch"):
             validate_and_decrypt_frame(changed_iv_frame, id_b, peers_b)
 
-        peer_state = peers_b[format_client_id(id_a)]
+        peer_state = peers_b[str(uuid.UUID(bytes=id_a))]
         self.assertEqual(peer_state["seq_recv"], 0)
         self.assertEqual(peer_state["IV_base_recv"], iv_a)
 
     def test_e2e_tampering_fails(self):
-        id_a = generate_client_id()
-        id_b = generate_client_id()
+        id_a = uuid.uuid4().bytes
+        id_b = uuid.uuid4().bytes
         
         sk_a, pk_a = generate_key_pair()
         sk_b, pk_b = generate_key_pair()
@@ -221,7 +221,7 @@ class TestCrypto(unittest.TestCase):
         _, key_recv_b, _ = derive_e2e_keys(sk_b, pk_a_bytes, id_b, id_a, salt_srv)
         
         peers_b = {
-            format_client_id(id_a): {
+            str(uuid.UUID(bytes=id_a)): {
                 "key_recv": key_recv_b,
                 "seq_recv": -1,
                 "IV_base_recv": None
@@ -237,14 +237,14 @@ class TestCrypto(unittest.TestCase):
         
         with self.assertRaises(ValueError):
             validate_and_decrypt_frame(bytes(tampered_frame_ct), id_b, peers_b)
-        self.assertEqual(peers_b[format_client_id(id_a)]["seq_recv"], -1)
-        self.assertIsNone(peers_b[format_client_id(id_a)]["IV_base_recv"])
+        self.assertEqual(peers_b[str(uuid.UUID(bytes=id_a))]["seq_recv"], -1)
+        self.assertIsNone(peers_b[str(uuid.UUID(bytes=id_a))]["IV_base_recv"])
 
         print("Testes negativos de adulteração (tampering / InvalidTag) passaram!")
 
     def test_max_plaintext_limit(self):
-        id_a = generate_client_id()
-        id_b = generate_client_id()
+        id_a = uuid.uuid4().bytes
+        id_b = uuid.uuid4().bytes
         key_send = secrets.token_bytes(16)
         iv_base = secrets.token_bytes(4)
 
@@ -263,7 +263,7 @@ class TestCrypto(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "frame muito curto"):
             validate_and_decrypt_frame(
                 b"\x00" * (MIN_E2E_FRAME_SIZE - 1),
-                generate_client_id(),
+                uuid.uuid4().bytes,
                 {},
             )
 

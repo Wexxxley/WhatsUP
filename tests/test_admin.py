@@ -1,6 +1,7 @@
 import asyncio
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,7 +16,6 @@ from protocol.admin import (
     create_admin_frame,
     verify_admin_frame,
 )
-from protocol.ids import generate_client_id, format_client_id
 from protocol.keys import generate_key_pair, serialize_public_key
 from tools.generate_certificate import generate_server_credentials
 
@@ -33,8 +33,8 @@ class TestAdministrativeFrames(unittest.TestCase):
         cls.temp_dir.cleanup()
 
     def setUp(self):
-        self.announced_id = generate_client_id()
-        self.recipient_id = generate_client_id()
+        self.announced_id = uuid.uuid4().bytes
+        self.recipient_id = uuid.uuid4().bytes
         self.salt_srv = b"S" * 16
         _, peer_public_key = generate_key_pair()
         self.peer_public_key = serialize_public_key(peer_public_key)
@@ -76,7 +76,7 @@ class TestAdministrativeFrames(unittest.TestCase):
             self.frame(announcement_type=2)
 
     def test_each_recipient_gets_a_distinct_signed_frame(self):
-        other_recipient = generate_client_id()
+        other_recipient = uuid.uuid4().bytes
         first = self.frame(ADMIN_JOIN, 0)
         second = create_admin_frame(
             self.private_key,
@@ -133,7 +133,7 @@ class TestAdministrativeFrames(unittest.TestCase):
             verify_admin_frame(
                 frame,
                 self.cert_path,
-                generate_client_id(),
+                uuid.uuid4().bytes,
                 self.salt_srv,
             )
         with self.assertRaisesRegex(ValueError, "Salt"):
@@ -157,7 +157,7 @@ class TestAdministrativeFrames(unittest.TestCase):
         client_private_key, _ = generate_key_pair()
         frame = self.frame(ADMIN_JOIN, 1)
         old_frame = self.frame(ADMIN_JOIN, 0)
-        peer_id_str = format_client_id(self.announced_id)
+        peer_id_str = str(uuid.UUID(bytes=self.announced_id))
         peers = {}
 
         async def receive_once():
@@ -191,7 +191,7 @@ class TestAdministrativeFrames(unittest.TestCase):
 
     def test_forged_leave_does_not_remove_peer(self):
         client_private_key, _ = generate_key_pair()
-        peer_id_str = format_client_id(self.announced_id)
+        peer_id_str = str(uuid.UUID(bytes=self.announced_id))
         peers = {
             peer_id_str: {
                 "public_key_b": generate_key_pair()[1],

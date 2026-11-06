@@ -1,11 +1,11 @@
 import asyncio
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
 import server
-from protocol.ids import generate_client_id, format_client_id
 from protocol.keys import generate_key_pair, serialize_public_key
 from tools.generate_certificate import generate_server_credentials
 
@@ -34,12 +34,12 @@ class TestServerRegistration(unittest.TestCase):
         cls.temp_dir.cleanup()
 
     def test_duplicate_active_client_id_is_rejected_without_replacing_session(self):
-        client_id = generate_client_id()
+        client_id = uuid.uuid4().bytes
         _, public_key = generate_key_pair()
         registration_frame = client_id + serialize_public_key(public_key)
         writer = CaptureWriter()
         existing_session = {"writer": object()}
-        client_id_str = format_client_id(client_id)
+        client_id_str = str(uuid.UUID(bytes=client_id))
 
         async def register_duplicate():
             reader = asyncio.StreamReader()

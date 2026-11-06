@@ -1,6 +1,6 @@
 import unittest
 import secrets
-from protocol.ids import generate_client_id, format_client_id
+import uuid
 from protocol.keys import generate_key_pair, serialize_public_key, deserialize_public_key
 from protocol.crypto import (
     derive_e2e_keys,
@@ -12,8 +12,8 @@ from protocol.framing import MAX_FRAME_SIZE
 class TestIntegrationRubric(unittest.TestCase):
     def setUp(self):
         # Setup two honest clients A and B
-        self.id_a = generate_client_id()
-        self.id_b = generate_client_id()
+        self.id_a = uuid.uuid4().bytes
+        self.id_b = uuid.uuid4().bytes
         
         self.sk_a, self.pk_a = generate_key_pair()
         self.sk_b, self.pk_b = generate_key_pair()
@@ -33,14 +33,14 @@ class TestIntegrationRubric(unittest.TestCase):
         
         # Tabelas de peers simuladas
         self.peers_a = {
-            format_client_id(self.id_b): {
+            str(uuid.UUID(bytes=self.id_b)): {
                 "key_recv": self.key_recv_a,
                 "seq_recv": -1,
                 "IV_base_recv": None
             }
         }
         self.peers_b = {
-            format_client_id(self.id_a): {
+            str(uuid.UUID(bytes=self.id_a)): {
                 "key_recv": self.key_recv_b,
                 "seq_recv": -1,
                 "IV_base_recv": None
@@ -65,7 +65,7 @@ class TestIntegrationRubric(unittest.TestCase):
             peers=self.peers_b
         )
         
-        self.assertEqual(sender_str, format_client_id(self.id_a))
+        self.assertEqual(sender_str, str(uuid.UUID(bytes=self.id_a)))
         self.assertEqual(decrypted_text, plaintext)
         print("[T1] Happy Path E2E passou com sucesso!")
 
