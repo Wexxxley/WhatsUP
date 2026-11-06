@@ -6,27 +6,28 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from protocol.spec import (
+from protocol.constants import (
     ADMIN_MAX_FRAME_SIZE,
+    ADMIN_HEADER_FORMAT,
+    ADMIN_HEADER_SIZE,
     ADMIN_MIN_FRAME_SIZE,
+    ADMIN_SIGNATURE_LENGTH_SIZE,
     CLIENT_ID_SIZE,
     SALT_SIZE,
     X25519_KEY_SIZE,
 )
 
-ADMIN_MAGIC = b"WUA1"
-ADMIN_VERSION = 1
-ADMIN_JOIN = 1
-ADMIN_ROTATE = 2
-ADMIN_LEAVE = 3
-ADMIN_TYPES = frozenset((ADMIN_JOIN, ADMIN_ROTATE, ADMIN_LEAVE))
-ADMIN_HEADER_FORMAT = "!4sBBQ16s16s32s16s"
-ADMIN_HEADER_SIZE = struct.calcsize(ADMIN_HEADER_FORMAT)
-ADMIN_SIGNATURE_LENGTH_SIZE = 2
+ADMIN_MAGIC = b"WUA1"  # Identifica um frame do protocolo de anúncios administrativos.
+ADMIN_VERSION = 1  # Versão do formato do frame; permite evoluir o protocolo.
+ADMIN_JOIN = 1  # Anúncio de que um cliente entrou.
+ADMIN_LEAVE = 3  # Anúncio de que um cliente saiu.
+ADMIN_TYPES = frozenset((ADMIN_JOIN, ADMIN_LEAVE))  # Tipos aceitos.
 
 
 @dataclass(frozen=True)
 class AdminAnnouncement:
+    """Campos de um anúncio administrativo já extraídos do frame."""
+
     announcement_type: int
     seq_admin: int
     announced_id: bytes
@@ -43,6 +44,7 @@ def _validate_fields(
     public_key: bytes,
     salt_srv: bytes,
 ) -> None:
+    """Valida os campos comuns antes de serializar ou aceitar um anúncio."""
     if announcement_type not in ADMIN_TYPES:
         raise ValueError("Tipo de anúncio administrativo inválido")
     if seq_admin < 0:
@@ -55,10 +57,11 @@ def _validate_fields(
         raise ValueError("public_key deve ter 32 bytes")
     if len(salt_srv) != SALT_SIZE:
         raise ValueError("salt_srv deve ter 16 bytes")
+    # Saídas não precisam divulgar uma chave; os outros tipos sempre precisam.
     if announcement_type == ADMIN_LEAVE and public_key != b"\x00" * X25519_KEY_SIZE:
         raise ValueError("Anúncio de saída deve usar chave sentinela")
-    if announcement_type != ADMIN_LEAVE and public_key == b"\x00" * X25519_KEY_SIZE:
-        raise ValueError("Anúncio de entrada/rotação exige chave pública")
+    if announcement_type == ADMIN_JOIN and public_key == b"\x00" * X25519_KEY_SIZE:
+        raise ValueError("Anúncio de entrada exige chave pública")
 
 
 def _signed_material(
@@ -69,6 +72,9 @@ def _signed_material(
     public_key: bytes,
     salt_srv: bytes,
 ) -> bytes:
+    """Serializa os campos do anúncio na ordem definida pelo cabeçalho."""
+    # "!" define ordem de rede (big-endian), sem alinhamento nativo.
+    # A sequência abaixo corresponde a ADMIN_HEADER_FORMAT.
     return struct.pack(
         ADMIN_HEADER_FORMAT,
         ADMIN_MAGIC,
@@ -91,6 +97,7 @@ def create_admin_frame(
     public_key: bytes,
     salt_srv: bytes,
 ) -> bytes:
+    """Cria um frame administrativo com cabeçalho e assinatura RSA-PSS."""
     _validate_fields(
         announcement_type,
         seq_admin,
@@ -107,6 +114,7 @@ def create_admin_frame(
         public_key,
         salt_srv,
     )
+    # A assinatura autentica todos os campos serializados do cabeçalho.
     signature = server_private_key.sign(
         material,
         padding.PSS(
@@ -117,15 +125,18 @@ def create_admin_frame(
     )
     if len(signature) > 0xFFFF:
         raise ValueError("Assinatura administrativa excede o limite")
+    # O tamanho da assinatura ocupa 2 bytes; em seguida vem a assinatura.
     return material + len(signature).to_bytes(2, "big") + signature
 
 
 def parse_admin_frame(frame: bytes) -> AdminAnnouncement:
+    """Extrai e valida a estrutura do frame, sem verificar sua assinatura."""
     if len(frame) < ADMIN_MIN_FRAME_SIZE:
         raise ValueError("Frame administrativo muito curto")
     if len(frame) > ADMIN_MAX_FRAME_SIZE:
         raise ValueError("Frame administrativo excede o limite")
 
+    # O tamanho mínimo já garante que o cabeçalho e o campo de tamanho existam.
     fields = struct.unpack(
         ADMIN_HEADER_FORMAT,
         frame[:ADMIN_HEADER_SIZE],
@@ -151,6 +162,7 @@ def parse_admin_frame(frame: bytes) -> AdminAnnouncement:
         salt_srv,
     )
 
+    # Confere se o frame contém exatamente a quantidade de bytes declarada.
     signature_length_start = ADMIN_HEADER_SIZE
     signature_length = int.from_bytes(
         frame[signature_length_start:signature_length_start + 2],
@@ -160,6 +172,8 @@ def parse_admin_frame(frame: bytes) -> AdminAnnouncement:
     if signature_length == 0 or len(frame) != signature_start + signature_length:
         raise ValueError("Tamanho da assinatura administrativa inválido")
 
+    # A assinatura é mantida no frame para verificação posterior; aqui retornamos
+    # apenas os campos do anúncio usados pelo cliente.
     return AdminAnnouncement(
         announcement_type=announcement_type,
         seq_admin=seq_admin,
@@ -176,17 +190,21 @@ def verify_admin_frame(
     expected_recipient_id: bytes,
     expected_salt_srv: bytes | None,
 ) -> AdminAnnouncement:
+    """Valida destinatário, salt e assinatura usando o certificado pinado."""
     announcement = parse_admin_frame(frame)
     if announcement.recipient_id != expected_recipient_id:
         raise ValueError("Destinatário do anúncio administrativo não confere")
     if expected_salt_srv is not None and announcement.salt_srv != expected_salt_srv:
         raise ValueError("Salt do anúncio administrativo não confere")
 
+    # O certificado pinado fornece a chave pública confiável do servidor.
     with open(pinned_cert_path, "rb") as certificate_file:
         certificate = x509.load_pem_x509_certificate(certificate_file.read())
 
+    # Recupera a assinatura após o cabeçalho e seu campo de tamanho.
     signature_start = ADMIN_HEADER_SIZE + ADMIN_SIGNATURE_LENGTH_SIZE
     signature = frame[signature_start:]
+    # Reconstrói exatamente os bytes assinados na criação do frame.
     material = _signed_material(
         announcement.announcement_type,
         announcement.seq_admin,
@@ -196,6 +214,7 @@ def verify_admin_frame(
         announcement.salt_srv,
     )
     try:
+        # Aceita o anúncio somente se a assinatura corresponder ao conteúdo.
         certificate.public_key().verify(
             signature,
             material,

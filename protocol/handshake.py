@@ -4,7 +4,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.exceptions import InvalidSignature
-from protocol.spec import SALT_SIZE
+from protocol.constants import SALT_SIZE
 
 # RSA-PSS(SHA-256) algoritmo de criptografia assimétrica para assinatura
 

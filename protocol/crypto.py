@@ -1,11 +1,11 @@
 import secrets
+import uuid
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from protocol.keys import deserialize_public_key
-from protocol.ids import format_client_id
-from protocol.spec import (
+from protocol.constants import (
     MAX_PLAINTEXT_SIZE,
     MIN_E2E_FRAME_SIZE,
     NONCE_SIZE,
@@ -142,7 +142,7 @@ def validate_and_decrypt_frame(
     target_id = frame[NONCE_SIZE + CLIENT_ID_SIZE:NONCE_SIZE + 2 * CLIENT_ID_SIZE]
     seq_bytes_b = frame[NONCE_SIZE + 2 * CLIENT_ID_SIZE:NONCE_SIZE + 2 * CLIENT_ID_SIZE + SEQUENCE_SIZE]
     
-    sender_id_str = format_client_id(id_b)
+    sender_id_str = str(uuid.UUID(bytes=id_b))
 
     if sender_id_str not in peers:
         raise ValueError(f"Remetente desconhecido: {sender_id_str}")

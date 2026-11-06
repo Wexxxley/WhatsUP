@@ -1,8 +1,8 @@
 import unittest
 import tempfile
+import uuid
 from pathlib import Path
 
-from protocol.ids import generate_client_id
 from protocol.keys import generate_key_pair, serialize_public_key
 from protocol.handshake import (
     create_server_handshake_response,
@@ -25,7 +25,7 @@ class TestHandshake(unittest.TestCase):
         cls.temp_dir.cleanup()
 
     def test_handshake_positive(self):
-        client_id = generate_client_id()
+        client_id = uuid.uuid4().bytes
         _, pk = generate_key_pair()
         pk_bytes = serialize_public_key(pk)
         
@@ -48,7 +48,7 @@ class TestHandshake(unittest.TestCase):
         print("Teste positivo de handshake passou!")
 
     def test_each_handshake_generates_an_independent_salt(self):
-        client_id = generate_client_id()
+        client_id = uuid.uuid4().bytes
         _, pk = generate_key_pair()
         pk_bytes = serialize_public_key(pk)
 
@@ -64,7 +64,7 @@ class TestHandshake(unittest.TestCase):
         self.assertNotEqual(first_salt, second_salt)
 
     def test_handshake_negative_signature_corruption(self):
-        client_id = generate_client_id()
+        client_id = uuid.uuid4().bytes
         _, pk = generate_key_pair()
         pk_bytes = serialize_public_key(pk)
         
@@ -93,7 +93,7 @@ class TestHandshake(unittest.TestCase):
         print("Teste negativo de corrupção de assinatura passou!")
 
     def test_handshake_negative_salt_corruption(self):
-        client_id = generate_client_id()
+        client_id = uuid.uuid4().bytes
         _, pk = generate_key_pair()
         pk_bytes = serialize_public_key(pk)
         
@@ -117,8 +117,8 @@ class TestHandshake(unittest.TestCase):
         print("Teste negativo de corrupção de salt passou!")
 
     def test_handshake_signature_is_bound_to_client_key_and_id(self):
-        client_id = generate_client_id()
-        other_client_id = generate_client_id()
+        client_id = uuid.uuid4().bytes
+        other_client_id = uuid.uuid4().bytes
         _, client_pk = generate_key_pair()
         _, other_client_pk = generate_key_pair()
         client_pk_bytes = serialize_public_key(client_pk)
@@ -138,7 +138,7 @@ class TestHandshake(unittest.TestCase):
             )
 
     def test_handshake_rejects_a_different_pinned_certificate(self):
-        client_id = generate_client_id()
+        client_id = uuid.uuid4().bytes
         _, client_pk = generate_key_pair()
         client_pk_bytes = serialize_public_key(client_pk)
 

@@ -2,7 +2,7 @@ import asyncio
 import unittest
 
 from protocol.framing import recv_frame, send_frame
-from protocol.spec import MAX_FRAME_SIZE
+from protocol.constants import MAX_FRAME_SIZE
 
 
 class MemoryWriter:
