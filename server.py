@@ -40,7 +40,7 @@ SERVER_CERT_BYTES: bytes | None = None
 # ---------------------------------------------------------------------------------
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    """Função assíncrona executada para cada cliente (isolada por task)."""
+    """Atende uma conexão: registro, relay E2E e limpeza da sessão."""
 
     peername = writer.get_extra_info('peername') # tupla do tipo ('127.0.0.1', 42176)
     
@@ -104,8 +104,9 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         writer.close()
         await writer.wait_closed()
 
+# Fase 2: registro do cliente, handshake e anúncio de peers
 async def registration(reader, writer):
-    """Função responsável por registrar o cliente, executar o handshake e armazenar sessão."""
+    """Executa as Fases 2 e 4: handshake, anúncio de peers e registro da sessão."""
     if SERVER_PRIV_KEY is None or SERVER_CERT_BYTES is None:
         raise RuntimeError("Credenciais do servidor não foram carregadas")
 
@@ -186,7 +187,7 @@ def _next_admin_seq(session: SessionData) -> int:
     return seq_admin
 
 async def main():
-    """Função principal do servidor responsável por inicializar o listener TCP."""
+    """Fase 0: cria credenciais e inicia o listener de conexões."""
     global SERVER_PRIV_KEY, SERVER_CERT_BYTES
 
     # Gera uma nova identidade do servidor a cada inicialização.

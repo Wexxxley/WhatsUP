@@ -1,10 +1,12 @@
-# WhatsUp — Sistema de Mensageria Multi-Cliente (E2E)
+# WhatsUp - Sistema de Mensageria Multi-Cliente (E2E)
 
 ## Visão geral
 
 O WhatsUp é uma aplicação de mensageria com criptografia ponta a ponta (E2E). Clientes trocam mensagens cifradas, 
 enquanto o servidor atua como relay: ele gerencia conexões e encaminha frames, mas não
 decifra o conteúdo das mensagens.
+
+![](/public/whatsup-logo.png)
 
 ### Garantias
 
@@ -18,6 +20,7 @@ decifra o conteúdo das mensagens.
 
 - [Visão geral e garantias](#visao-geral)
 - [Execução](#execucao)
+- [Como acompanhar as fases no código](#como-acompanhar-as-fases-no-codigo)
 - [Diagrama de sequência](#diagrama-de-sequencia)
 - [FASE 0: Credenciais do servidor](#fase-0-credenciais-servidor)
 - [FASE 1: Registro do cliente](#fase-1-registro-cliente)
@@ -43,6 +46,25 @@ python3 server.py
 python3 -m unittest discover -s tests
 ```
 ---
+
+## Como acompanhar as fases no código
+
+As fases do protocolo estão implementadas em mais de um arquivo. Use este mapa.
+
+| Fase | Caminho no código |
+|---|---|
+| 0 - Credenciais do servidor | `server.main()` chama `generate_server_credentials()`|
+| 1 - Registro do cliente | `client.main()` gera o ID e o par X25519, monta o registro e chama `send_frame()` em `protocol/framing.py`. |
+| 2 - Handshake do servidor | `server.handle_client()` chama `server.registration()`, que usa `create_server_handshake_response()` em `protocol/handshake.py`. |
+| 3 - Validação do handshake | `client.main()` verifica a resposta com `verify_server_handshake_response()` em `protocol/handshake.py`. |
+| 4 - Anúncio de peers | `server.registration()` envia anúncios assinados; `client.apply_admin_frame()` valida com `verify_admin_frame()` em `protocol/admin.py`. |
+| 5 - Derivação das chaves E2E | `client.apply_admin_frame()` chama `client.add_peer()`, que usa `derive_e2e_keys()` em `protocol/crypto.py`. |
+| 6 - Envio de mensagem | `client.send_chat_message()` chama `encrypt_e2e_message()` e depois `send_frame()`. |
+| 7 - Recepção de mensagem | `client.receive_messages()` chama `validate_and_decrypt_frame()` em `protocol/crypto.py`. |
+
+`client_terminal.py` contém a interface curses e o tratamento das teclas. Ela
+recebe estado e a função de envio do `client.py`; assim, a apresentação fica
+separada da lógica de protocolo e criptografia.
 
 ## Diagrama de sequência
 

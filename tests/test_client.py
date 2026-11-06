@@ -4,7 +4,8 @@ import unittest
 import uuid
 from unittest.mock import patch
 
-from client import PeerData, add_peer, send_chat_message, terminal_chat
+from client import PeerData, add_peer, client_lock, send_chat_message
+from client_terminal import terminal_chat
 from protocol.crypto import (
     encrypt_e2e_message,
     validate_and_decrypt_frame,
@@ -218,20 +219,27 @@ class TestClientPeerRegistration(unittest.TestCase):
         with (
             patch("client.peers", peers),
             patch("client.history", history),
-            patch("client.curses.initscr", return_value=screen),
-            patch("client.curses.noecho"),
-            patch("client.curses.cbreak"),
-            patch("client.curses.nocbreak"),
-            patch("client.curses.echo"),
-            patch("client.curses.endwin"),
-            patch("client.locale.setlocale"),
+            patch("client_terminal.curses.initscr", return_value=screen),
+            patch("client_terminal.curses.noecho"),
+            patch("client_terminal.curses.cbreak"),
+            patch("client_terminal.curses.nocbreak"),
+            patch("client_terminal.curses.echo"),
+            patch("client_terminal.curses.endwin"),
+            patch("client_terminal.locale.setlocale"),
         ):
             async def run_chat():
                 await add_peer(
                     peer_id_str, peer_id, serialize_public_key(peer_pk),
                     client_id, sk, self.salt_srv,
                 )
-                await terminal_chat(writer, client_id)
+                await terminal_chat(
+                    writer,
+                    client_id,
+                    peers,
+                    history,
+                    client_lock,
+                    send_chat_message,
+                )
 
             asyncio.run(run_chat())
 
