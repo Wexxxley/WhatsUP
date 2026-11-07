@@ -2,16 +2,18 @@
 
 import hashlib
 import secrets
+import tempfile
+import uuid
+from pathlib import Path
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography import x509
 
 from protocol.crypto import decrypt_e2e_message, derive_e2e_keys, encrypt_e2e_message
-from protocol.ids import generate_client_id
 from protocol.keys import generate_key_pair, serialize_public_key
-from protocol.spec import NONCE_SIZE, CLIENT_ID_SIZE, SEQUENCE_SIZE
-from tools.generate_certificate import load_or_generate_server_credentials
+from protocol.constants import NONCE_SIZE, CLIENT_ID_SIZE, SEQUENCE_SIZE
+from tools.generate_certificate import generate_server_credentials
 
 
 def fingerprint(value: bytes) -> str:
@@ -65,8 +67,8 @@ def show_server_missing_data() -> None:
 
 
 def main() -> None:
-    client_a_id = generate_client_id()
-    client_b_id = generate_client_id()
+    client_a_id = uuid.uuid4().bytes
+    client_b_id = uuid.uuid4().bytes
     client_a_sk, client_a_pk = generate_key_pair()
     client_b_sk, client_b_pk = generate_key_pair()
     salt_srv = secrets.token_bytes(16)
@@ -75,7 +77,10 @@ def main() -> None:
 
     # O servidor possui a chave RSA para assinar o handshake. Ela não é usada
     # para derivar a chave AES E2E e nunca é impressa pela demonstração.
-    server_private_key, server_cert_bytes = load_or_generate_server_credentials()
+    with tempfile.TemporaryDirectory() as cert_dir:
+        server_private_key, server_cert_bytes = generate_server_credentials(
+            Path(cert_dir)
+        )
     server_certificate = x509.load_pem_x509_certificate(server_cert_bytes)
 
     key_a_send, _, iv_base = derive_e2e_keys(
