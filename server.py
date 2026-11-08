@@ -151,6 +151,8 @@ async def registration(reader, writer):
             'salt': salt_srv,
         }
 
+        # Anunciar o novo cliente para todos os peers existentes e vice-versa
+        # Note que para o par novo cliente -> peer existente o salt é o mesmo
         for existing_data in sessions.values():
             # Enviar informações de cada peer existente para o novo cliente
             peer_info = create_admin_frame(

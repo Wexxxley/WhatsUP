@@ -50,10 +50,9 @@ def create_server_handshake_response(
     elif len(salt_srv) != SALT_SIZE:
         raise ValueError(f"salt_srv deve ter exatamente {SALT_SIZE} bytes")
     
-    # O protocolo define explicitamente H = SHA256(material) e a assinatura
-    # RSA-PSS sobre H. Prehashed evita que a biblioteca faça um segundo hash
-    # do digest já calculado.
     material = pk_s_bytes + pk_c_bytes + client_id_bytes + salt_srv
+    
+    # Assinatura RSA-PSS(SHA-256) do material
     digest = hashes.Hash(hashes.SHA256())
     digest.update(material)
     material_hash = digest.finalize()
@@ -121,6 +120,7 @@ def verify_server_handshake_response(
     pk_s_bytes = get_server_pubkey_bytes(server_cert)
     server_pub_key = server_cert.public_key()
     material = pk_s_bytes + pk_c_bytes + client_id_bytes + salt_srv
+    
     digest = hashes.Hash(hashes.SHA256())
     digest.update(material)
     material_hash = digest.finalize()

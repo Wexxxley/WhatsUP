@@ -81,6 +81,7 @@ async def main():
         num_peers_bytes = await recv_frame(reader)
         num_peers = int.from_bytes(num_peers_bytes, 'big')
         print(f"Recebendo {num_peers} peer(s) inicial(is)...")
+        
         for _ in range(num_peers):
             peer_frame = await recv_frame(reader)
             announcement = await apply_admin_frame(

@@ -5,6 +5,7 @@ from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 
 from protocol.constants import (
     ADMIN_MAX_FRAME_SIZE,
@@ -114,14 +115,17 @@ def create_admin_frame(
         public_key,
         salt_srv,
     )
+    digest = hashes.Hash(hashes.SHA256())
+    digest.update(material)
+    material_hash = digest.finalize()
     # A assinatura autentica todos os campos serializados do cabeçalho.
     signature = server_private_key.sign(
-        material,
+        material_hash,
         padding.PSS(
             mgf=padding.MGF1(hashes.SHA256()),
             salt_length=padding.PSS.MAX_LENGTH,
         ),
-        hashes.SHA256(),
+        Prehashed(hashes.SHA256()),
     )
     if len(signature) > 0xFFFF:
         raise ValueError("Assinatura administrativa excede o limite")
@@ -199,7 +203,8 @@ def verify_admin_frame(
 
     # O certificado pinado fornece a chave pública confiável do servidor.
     with open(pinned_cert_path, "rb") as certificate_file:
-        certificate = x509.load_pem_x509_certificate(certificate_file.read())
+        server_cert = x509.load_pem_x509_certificate(certificate_file.read())
+    server_pub_key = server_cert.public_key()
 
     # Recupera a assinatura após o cabeçalho e seu campo de tamanho.
     signature_start = ADMIN_HEADER_SIZE + ADMIN_SIGNATURE_LENGTH_SIZE
@@ -213,16 +218,20 @@ def verify_admin_frame(
         announcement.public_key,
         announcement.salt_srv,
     )
+    digest = hashes.Hash(hashes.SHA256())
+    digest.update(material)
+    material_hash = digest.finalize()
+
     try:
         # Aceita o anúncio somente se a assinatura corresponder ao conteúdo.
-        certificate.public_key().verify(
+        server_pub_key.verify(
             signature,
-            material,
+            material_hash,
             padding.PSS(
                 mgf=padding.MGF1(hashes.SHA256()),
                 salt_length=padding.PSS.MAX_LENGTH,
             ),
-            hashes.SHA256(),
+            Prehashed(hashes.SHA256()),
         )
     except InvalidSignature as error:
         raise InvalidSignature(
