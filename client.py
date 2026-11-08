@@ -240,16 +240,17 @@ async def receive_messages(
     """Recebe frames do servidor e atualiza peers e histórico de mensagens."""
 
     while True:
+        # A espera de um frame
         try:
             payload = await recv_frame(reader)
         except asyncio.IncompleteReadError:
-            # O servidor encerrou a conexão ou não terminou de enviar o frame. Registra o encerramento
             async with client_lock:
                 history.setdefault("*", []).append(
                     {"sender": "*", "message": "Conexão encerrada pelo servidor."}
                 )
             return
 
+        # Se for um anúncio administrativo, aplica a validação e atualização de peers.
         if payload.startswith(ADMIN_MAGIC):
             try:
                 await apply_admin_frame(payload, id_a, sk_a)
@@ -261,10 +262,12 @@ async def receive_messages(
                             "message": f"Anúncio administrativo inválido: {e}",
                         }
                     )
+                    
         # Se não for anúncio de peer e for menor que 68 bytes, é um frame inválido.
         elif len(payload) < MIN_E2E_FRAME_SIZE:
             async with client_lock:
                 history.setdefault("*", []).append( {"sender": "*", "message": f"Frame inesperado recebido ({len(payload)} bytes)."})
+        
         # Só frames E2E (68 bytes ou mais) chegam à validação criptográfica.
         else:
             try:
@@ -276,8 +279,6 @@ async def receive_messages(
                 # Mensagem E2E inválida 
                 async with client_lock:
                     history.setdefault("*", []).append( {"sender": "*", "message": f"Mensagem recebida inválida: {e}"})
-
-
 
 if __name__ == "__main__":
     asyncio.run(main())

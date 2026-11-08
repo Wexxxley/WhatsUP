@@ -55,7 +55,7 @@ def derive_e2e_keys(
         key_send = key_b
         key_recv = key_a
 
-    iv_base_send = secrets.token_bytes(4) # 
+    iv_base_send = secrets.token_bytes(4) 
 
     # Z_ab sai de escopo aqui e é coletado pelo garbage collector (descartado)
     return key_send, key_recv, iv_base_send
@@ -77,6 +77,7 @@ def encrypt_e2e_message(
     if len(plaintext) > MAX_PLAINTEXT_SIZE:
         raise ValueError(f"Plaintext excede o limite máximo de {MAX_PLAINTEXT_SIZE} bytes")
 
+    # Nonce n precisa ser secreto, mas deve ser único para cada mensagem cifrada com a mesma chave.
     seq_bytes = seq_send.to_bytes(SEQUENCE_SIZE, 'big')
     nonce = iv_base_send + seq_bytes
     aad = sender_id + recipient_id + seq_bytes
