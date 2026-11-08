@@ -17,7 +17,7 @@ def generate_server_credentials(
         key_size=RSA_KEY_SIZE_BITS,
     )
 
-    # Subject = Issuer por ser um certificado autoassinado
+    # Subject(sujeito) = Issuer(emissor) por ser um certificado autoassinado
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, "tp3-server"),
     ])

@@ -38,6 +38,7 @@ class TestAdministrativeFrames(unittest.TestCase):
         cls.temp_dir.cleanup()
 
     def setUp(self):
+        client.last_admin_sequence_received = -1
         self.announced_id = uuid.uuid4().bytes
         self.recipient_id = uuid.uuid4().bytes
         self.salt_srv = b"S" * 16
@@ -184,7 +185,6 @@ class TestAdministrativeFrames(unittest.TestCase):
                 frame,
                 self.recipient_id,
                 client_private_key,
-                self.salt_srv,
                 self.cert_path,
             )
 
@@ -192,7 +192,6 @@ class TestAdministrativeFrames(unittest.TestCase):
             patch("client.peers", peers),
             patch("client.history", {}),
         ):
-            client.admin_last_seq.clear()
             asyncio.run(receive_once())
             peers.clear()
             with self.assertRaisesRegex(ValueError, "replay rejected"):
@@ -201,7 +200,6 @@ class TestAdministrativeFrames(unittest.TestCase):
                         old_frame,
                         self.recipient_id,
                         client_private_key,
-                        self.salt_srv,
                         self.cert_path,
                     )
                 )
@@ -219,7 +217,7 @@ class TestAdministrativeFrames(unittest.TestCase):
             other_peer_id,
             self.recipient_id,
             self.peer_public_key,
-            self.salt_srv,
+            b"T" * 16,
         )
 
         async def receive(frame):
@@ -227,7 +225,6 @@ class TestAdministrativeFrames(unittest.TestCase):
                 frame,
                 self.recipient_id,
                 client_private_key,
-                self.salt_srv,
                 self.cert_path,
             )
 
@@ -235,7 +232,6 @@ class TestAdministrativeFrames(unittest.TestCase):
             patch("client.peers", {}),
             patch("client.history", {}),
         ):
-            client.admin_last_seq.clear()
             asyncio.run(receive(first_frame))
             with self.assertRaisesRegex(ValueError, "replay rejected"):
                 asyncio.run(receive(second_frame))
@@ -262,7 +258,6 @@ class TestAdministrativeFrames(unittest.TestCase):
                 bytes(forged),
                 self.recipient_id,
                 client_private_key,
-                self.salt_srv,
                 self.cert_path,
             )
 

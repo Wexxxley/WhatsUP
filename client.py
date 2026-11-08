@@ -41,8 +41,9 @@ peers: dict[str, PeerData] = {}
 # Histórico de mensagens por peer.
 # A lista de um chat específico armazena tanto as que você enviou quanto as que você recebeu daquele peer
 history: dict[str, list[MessageEntry]] = {}
-# Histórico de anúncios administrativos para evitar replay attacks.
-admin_last_seq: dict[tuple[bytes, bytes], int] = {}
+
+# Última sequência administrativa aceita na conexão atual com o servidor.
+last_admin_sequence_received = -1
 
 client_lock = asyncio.Lock()
 
@@ -50,10 +51,11 @@ client_lock = asyncio.Lock()
 
 async def main():
     """Orquestra registro, handshake, sincronização de peers e chat."""
-    global peers, history
+    global peers, history, last_admin_sequence_received
     async with client_lock:
         peers.clear()
         history.clear()
+        last_admin_sequence_received = -1
     
     # FASE 1: criar identidade e chave efêmera e registrar no servidor.
     id_a = uuid.uuid4().bytes
@@ -72,7 +74,9 @@ async def main():
     # FASE 3: autenticar o servidor e carregar a lista inicial de peers (Fase 4).
     try:
         handshake_response = await recv_frame(reader)
-        salt_srv = verify_server_handshake_response(handshake_response,"certs/server.crt",pk_bytes,id_a)
+        verify_server_handshake_response(
+            handshake_response, "certs/server.crt", pk_bytes, id_a
+        )
         
         num_peers_bytes = await recv_frame(reader)
         num_peers = int.from_bytes(num_peers_bytes, 'big')
@@ -80,7 +84,7 @@ async def main():
         for _ in range(num_peers):
             peer_frame = await recv_frame(reader)
             announcement = await apply_admin_frame(
-                peer_frame, id_a, sk_a, salt_srv
+                peer_frame, id_a, sk_a
             )
             if announcement.announcement_type == ADMIN_JOIN:
                 print(f"Peer online: {str(uuid.UUID(bytes=announcement.announced_id))}")
@@ -92,7 +96,7 @@ async def main():
         return
 
     receiver = asyncio.create_task(
-        receive_messages(reader, id_a, sk_a, salt_srv)
+        receive_messages(reader, id_a, sk_a)
     ) # Tarefa assíncrona para receber mensagens de forma contínua
     try:
         await terminal_chat(
@@ -120,22 +124,18 @@ async def apply_admin_frame(
     frame: bytes,
     client_id: bytes,
     sk_a: X25519PrivateKey,
-    _session_salt: bytes | None,
     pinned_cert_path: str = "certs/server.crt",
 ):
     """Valida um anúncio do servidor e atualiza o estado dos peers."""
+    global last_admin_sequence_received
+
     announcement = verify_admin_frame(
         frame,
         pinned_cert_path,
         client_id,
         None,
     )
-    replay_key = (
-        announcement.salt_srv,
-        announcement.recipient_id,
-    )
-    last_seq = admin_last_seq.get(replay_key, -1)
-    if announcement.seq_admin <= last_seq:
+    if announcement.seq_admin != last_admin_sequence_received + 1:
         raise ValueError("replay rejected: anúncio administrativo repetido")
 
     peer_id_str = str(uuid.UUID(bytes=announcement.announced_id))
@@ -154,7 +154,7 @@ async def apply_admin_frame(
             sk_a,
             announcement.salt_srv,
         )
-    admin_last_seq[replay_key] = announcement.seq_admin
+    last_admin_sequence_received = announcement.seq_admin
     return announcement
 
 
@@ -235,7 +235,6 @@ async def receive_messages(
     reader: asyncio.StreamReader,
     id_a: bytes,
     sk_a: X25519PrivateKey,
-    salt_srv: bytes,
 ) -> None:
     """Recebe frames do servidor e atualiza peers e histórico de mensagens."""
 
@@ -252,7 +251,7 @@ async def receive_messages(
 
         if payload.startswith(ADMIN_MAGIC):
             try:
-                await apply_admin_frame(payload, id_a, sk_a, salt_srv)
+                await apply_admin_frame(payload, id_a, sk_a)
             except (ValueError, InvalidSignature) as e:
                 async with client_lock:
                     history.setdefault("*", []).append(

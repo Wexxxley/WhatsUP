@@ -112,6 +112,7 @@ def decrypt_e2e_message(
     iv_base_b = nonce[:4]
     seq_no_b = int.from_bytes(seq_bytes, 'big')
 
+    # Validação do IV base. Se for a primeira mensagem, aceita qualquer IV base. Nas demais, deve ser o mesmo que o esperado.
     if expected_iv_base_recv is None:
         expected_iv_base_recv = iv_base_b
     elif iv_base_b != expected_iv_base_recv:
